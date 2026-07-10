@@ -9,6 +9,10 @@
     "dev": "bun run src/index.ts",
     "serve": "bun run src/server.ts",
     "web": "bun run --hot src/server.ts",
+    "novel": "bun run src/novel.ts",
+    "novel:next": "bun run src/novel.ts next",
+    "novel:auto": "bun run src/novel.ts auto",
+    "novel:list": "bun run src/novel.ts list",
     "test": "bun test",
     "typecheck": "tsc --noEmit"
   },

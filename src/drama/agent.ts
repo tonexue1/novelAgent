@@ -4,6 +4,7 @@ import { logger } from "../core/logger.ts";
 import {
   type Scene,
   type Beat,
+  type DramaContext,
   DEFAULT_SCENE,
   renderCast,
   castNames,
@@ -83,6 +84,7 @@ export class WuxiaDramaAgent implements Agent {
    */
   async playScene(
     input: string,
+    ctx?: DramaContext,
   ): Promise<{ scene: Scene; transcript: Beat[]; seed: string }> {
     const seed = input.trim() || DEFAULT_SEED;
     this.emit({ type: "seed", seed });
@@ -90,7 +92,7 @@ export class WuxiaDramaAgent implements Agent {
     logger.step(1, "开场（导演生成人物与背景）");
     logger.info(`开场引子：${seed}`);
     this.emit({ type: "step", n: 1, title: "开场（导演生成人物与背景）" });
-    const scene: Scene = (await this.director.openScene(seed)) ?? DEFAULT_SCENE;
+    const scene: Scene = (await this.director.openScene(seed, ctx)) ?? DEFAULT_SCENE;
 
     logger.info(`【背景】${scene.background}`);
     logger.info(`【登场人物】\n${renderCast(scene)}`);
@@ -138,10 +140,15 @@ export class WuxiaDramaAgent implements Agent {
   }
 
   /** 执笔人成文（单独触发）：把整幕即兴记录改写成小说体正文。 */
-  async novelizeScene(scene: Scene, transcript: Beat[], seed?: string): Promise<string> {
+  async novelizeScene(
+    scene: Scene,
+    transcript: Beat[],
+    seed?: string,
+    ctx?: DramaContext,
+  ): Promise<string> {
     logger.step(3, "成文（执笔人代笔）");
     this.emit({ type: "step", n: 3, title: "成文（执笔人代笔）" });
-    const prose = await this.novelist.write(scene, transcript, seed);
+    const prose = await this.novelist.write(scene, transcript, seed, ctx);
     this.emit({ type: "prose", content: prose });
     this.emit({ type: "done" });
     return prose;

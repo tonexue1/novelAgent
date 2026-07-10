@@ -9,3 +9,6 @@ bun.lockb
 wuxia-*.md
 chapter_*.md
 novel_*.md
+
+# 多章小说生成的项目产物
+novels/

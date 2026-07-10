@@ -1,5 +1,11 @@
 import type { LLMClient } from "../core/llm/client.ts";
-import { type Scene, type Beat, renderCast, renderTranscript } from "./scene.ts";
+import {
+  type Scene,
+  type Beat,
+  type DramaContext,
+  renderCast,
+  renderTranscript,
+} from "./scene.ts";
 
 /**
  * 执笔人（单 agent 收尾）。
@@ -15,11 +21,30 @@ import { type Scene, type Beat, renderCast, renderTranscript } from "./scene.ts"
 export class Novelist {
   constructor(private readonly client: LLMClient) {}
 
-  /** 把整幕即兴记录改写成一章小说体正文（含标题）。 */
-  async write(scene: Scene, transcript: Beat[], seed?: string): Promise<string> {
+  /**
+   * 把整幕即兴记录改写成一章小说体正文（含标题）。
+   * 传入 {@link DramaContext} 时进入"多章"模式：正文要承接上一章、扣住本章目标，
+   * 与故事梗概保持连贯。
+   */
+  async write(
+    scene: Scene,
+    transcript: Beat[],
+    seed?: string,
+    ctx?: DramaContext,
+  ): Promise<string> {
+    const continuity = ctx
+      ? [
+          "",
+          "本章是一部连载小说的第 " + ctx.chapterNo + " 章，务必与前文连贯：",
+          "- 承接上一章结尾，自然过渡，不要从头重新交代已知设定。",
+          "- 围绕【本章目标】展开，推进主线；与【故事梗概至今】保持一致，不得与既有事实矛盾。",
+        ]
+      : [];
+
     const system = [
       "你是一位文笔老练的武侠/幻想小说家。下面会给你一幕戏的【原始即兴记录】（多名角色临场演出 + 导演旁白）。",
       "请把它改写成一章【完整、连贯、好读】的小说正文，质感像正式出版的章回小说。",
+      ...continuity,
       "",
       "硬性要求（务必遵守）：",
       "- 忠于已发生的事实：谁做了什么、说了什么、最终结局，都不得推翻或改写；不要凭空加入重大新情节或新人物。",
@@ -33,6 +58,9 @@ export class Novelist {
 
     const user = [
       seed ? `【故事缘起】${seed}` : "",
+      ctx ? `【本章目标】${ctx.goal}` : "",
+      ctx?.storySoFar ? `【故事梗概至今】\n${ctx.storySoFar}` : "",
+      ctx?.previousChapterTail ? `【上一章结尾】\n${ctx.previousChapterTail}` : "",
       `【背景】${scene.background}`,
       `【登场人物】\n${renderCast(scene)}`,
       `【原始即兴记录】\n${renderTranscript(transcript, 100)}`,

@@ -3,8 +3,10 @@ import {
   type Scene,
   type Character,
   type Beat,
+  type DramaContext,
   renderCast,
   renderTranscript,
+  renderReturningCast,
   castNames,
 } from "./scene.ts";
 
@@ -106,19 +108,55 @@ export function parseDirectorDecision(text: string, validNames: string[]): Direc
 export class Director {
   constructor(private readonly client: LLMClient) {}
 
-  /** 根据用户一句开场，生成背景与出场人物。 */
-  async openScene(seed: string): Promise<Scene | null> {
-    const system = [
-      "你是一位武侠小说导演/说书人。根据用户给的一句开场，构造一个充满戏剧张力、适合多人博弈的场景。",
+  /**
+   * 根据一句开场，生成背景与出场人物。
+   * 传入 {@link DramaContext} 时进入"多章"模式：本章须扣住 goal、契合世界观、
+   * 并【忠实复现】给定的旧角色（沿用其性格/说话风格/秘密），仅按需新增角色。
+   */
+  async openScene(seed: string, ctx?: DramaContext): Promise<Scene | null> {
+    const baseRules = [
+      "你是一位武侠小说导演/说书人。构造一个充满戏剧张力、适合多人博弈的场景。",
       "要求：",
       "- 人物之间要有潜在的冲突、秘密或利益纠葛；出场人物 3-4 人；每人给出鲜明的身份、性格、目标，尽量有一两个人带秘密。",
       "- 每个人的 style（说话风格）必须【彼此迥异且非常具体】：点明用词习惯、句子长短、腔调、口头禅或语言毛病。",
       '  例如"惜字如金、多用短句、几乎不用形容词"／"满口市井黑话、爱骂人、句子糙"／"文绉绉爱掉书袋、引经据典"／"啰嗦、结巴、爱自我怀疑、废话多"／"阴阳怪气、爱反问"。',
       "- 切忌把所有人都写成同一种“文雅诗化”腔——他们要像四个来自不同世界的人。",
+    ];
+
+    const contextRules = ctx
+      ? [
+          "",
+          "本章属于一部连载小说，务必与既有设定连贯：",
+          "- 场景与人物要扣住【本章目标】推进主线。",
+          "- 若【需复现的旧角色】里有人应在本章登场，必须【原样沿用】其姓名、身份、性格、说话风格与秘密，不得改写其人设；可为其安排契合当前处境的新目标。",
+          "- 可按需新增角色，但不要与世界设定冲突。",
+          "- 有【回归者提示】时，让相关人物的登场与其上次状态自洽。",
+        ]
+      : [];
+
+    const system = [
+      ...baseRules,
+      ...contextRules,
       '只输出一个 JSON 对象：{"background":"时间地点氛围与起因","characters":[{"name":"姓名/称号","identity":"身份","personality":"性格","goal":"目标","secret":"秘密(可省略)","style":"说话风格(要具体且与他人不同)"}]}',
       "不要输出 JSON 以外的任何文字。",
     ].join("\n");
-    const user = `开场：${seed}`;
+
+    const user = ctx
+      ? [
+          `【本章目标】第${ctx.chapterNo}章：${ctx.goal}`,
+          `【世界设定要点】\n${ctx.worldBrief}`,
+          ctx.returningCharacters.length
+            ? `【需复现的旧角色】\n${renderReturningCast(ctx.returningCharacters)}`
+            : "",
+          ctx.returningNotes ? `【回归者提示】\n${ctx.returningNotes}` : "",
+          ctx.storySoFar ? `【故事梗概至今】\n${ctx.storySoFar}` : "",
+          ctx.openThreads ? `【未回收伏笔】\n${ctx.openThreads}` : "",
+          ctx.previousChapterTail ? `【上一章结尾】\n${ctx.previousChapterTail}` : "",
+          "请据此构造本章的开场场景与人物。",
+        ]
+          .filter(Boolean)
+          .join("\n\n")
+      : `开场：${seed}`;
 
     const { message } = await this.client.chat({
       messages: [

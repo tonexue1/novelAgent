@@ -36,10 +36,51 @@ export interface Beat {
   content: string;
 }
 
+/**
+ * 章节上下文：多章小说里，把整书记忆的相关片段喂给单章的导演/执笔人，
+ * 用来承接前文、复现旧角色、扣住本章目标。只依赖 {@link Character}（下层），
+ * 由 story 引擎组装后传入；不传则为单幕独立模式，行为与从前一致。
+ */
+export interface DramaContext {
+  /** 第几章。 */
+  chapterNo: number;
+  /** 本章目标（导演/执笔人要推进的核心）。 */
+  goal: string;
+  /** 世界观圣经的精炼渲染。 */
+  worldBrief: string;
+  /** 需复现的旧角色（已从人物档案还原，含性格/风格/秘密）。 */
+  returningCharacters: Character[];
+  /** 回归者补账提示（缺席若干章者需交代去向）。 */
+  returningNotes?: string;
+  /** 故事梗概至今（有界）。 */
+  storySoFar: string;
+  /** 未回收伏笔（渲染好的文本）。 */
+  openThreads: string;
+  /** 上一章结尾片段，保证承接。 */
+  previousChapterTail?: string;
+}
+
 /** 渲染出场人物名单（喂给导演/角色的公开信息）。 */
 export function renderCast(scene: Scene): string {
   return scene.characters
     .map((c, i) => `${i + 1}. ${c.name}——${c.identity}；目标：${c.goal}`)
+    .join("\n");
+}
+
+/** 渲染需复现的旧角色（含性格/说话风格/秘密），供导演忠实沿用。 */
+export function renderReturningCast(characters: Character[]): string {
+  if (characters.length === 0) return "";
+  return characters
+    .map((c) =>
+      [
+        `- ${c.name}（${c.identity}）`,
+        `  性格：${c.personality}`,
+        `  说话风格：${c.style}`,
+        c.secret ? `  秘密（沿用，勿擅自揭露）：${c.secret}` : "",
+      ]
+        .filter(Boolean)
+        .join("\n"),
+    )
     .join("\n");
 }
 

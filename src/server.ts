@@ -3,14 +3,29 @@ import { LLMClient } from "./core/llm/client.ts";
 import { WuxiaDramaAgent } from "./drama/agent.ts";
 import type { DramaEvent } from "./drama/events.ts";
 import type { Scene, Beat } from "./drama/scene.ts";
+import { NovelEngine } from "./story/engine.ts";
+import {
+  listProjects,
+  loadProject,
+  projectExists,
+  loadChapterProse,
+} from "./story/project.ts";
 
 /**
  * 武侠剧场 Web 服务端：Bun 原生 HTTP，零第三方依赖。
  *
- *   - GET  /               静态首页（web/index.html）
+ * 单幕即兴（首页 index.html）：
+ *   - GET  /               静态首页
  *   - GET  /<asset>        web/ 目录下的静态资源（css/js 等）
  *   - GET  /api/play       SSE：只演戏（导演+角色即兴），把每一拍实时推给左侧聊天区
  *   - POST /api/novelize   按需成文：拿前端回传的整幕记录，交执笔人写成小说体（右侧）
+ *
+ * 多章小说（novel.html）：
+ *   - GET  /novel                多章界面
+ *   - GET  /api/novels           列出所有小说项目
+ *   - POST /api/novels           新建小说（规划大纲），返回项目
+ *   - GET  /api/novels/:slug     项目详情（元数据/大纲/记忆）
+ *   - GET  /api/novels/:slug/next  SSE：生成下一章，流式推送演出/成文/记忆事件
  *
  * "演出"与"成文"拆成两步：先看戏，再点生成。两端复用同一套 WuxiaDramaAgent，
  * 无状态——整幕 transcript 由前端持有并在成文时回传，服务端不存会话。
@@ -55,11 +70,12 @@ async function serveStatic(pathname: string): Promise<Response> {
   });
 }
 
-/** 只演一幕戏（导演+角色，不收尾），用 SSE 把演出过程逐条推给浏览器。 */
-function handlePlay(url: URL): Response {
-  const seed = url.searchParams.get("seed") ?? "";
+/**
+ * 把一个"边跑边发事件"的任务包成 SSE 响应：自带心跳、错误包裹与收尾关闭。
+ * run 拿到 send 回调，任意时刻推 {@link DramaEvent}；抛错会被转成 error 事件。
+ */
+function sseResponse(run: (send: (e: DramaEvent) => void) => Promise<void>): Response {
   const encoder = new TextEncoder();
-
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
       let closed = false;
@@ -73,13 +89,9 @@ function handlePlay(url: URL): Response {
         if (!closed) controller.enqueue(encoder.encode(`: keepalive\n\n`));
       }, 5000);
       try {
-        const agent = new WuxiaDramaAgent({ client: new LLMClient(), onEvent: send });
-        await agent.playScene(seed);
+        await run(send);
       } catch (err) {
-        send({
-          type: "error",
-          message: err instanceof Error ? err.message : String(err),
-        });
+        send({ type: "error", message: err instanceof Error ? err.message : String(err) });
       } finally {
         closed = true;
         clearInterval(heartbeat);
@@ -94,6 +106,79 @@ function handlePlay(url: URL): Response {
       "Cache-Control": "no-cache, no-transform",
       Connection: "keep-alive",
     },
+  });
+}
+
+/** 只演一幕戏（导演+角色，不收尾），用 SSE 把演出过程逐条推给浏览器。 */
+function handlePlay(url: URL): Response {
+  const seed = url.searchParams.get("seed") ?? "";
+  return sseResponse(async (send) => {
+    const agent = new WuxiaDramaAgent({ client: new LLMClient(), onEvent: send });
+    await agent.playScene(seed);
+  });
+}
+
+interface CreateNovelBody {
+  seed?: string;
+  chapterHint?: string;
+}
+
+/** 列出所有小说项目。 */
+function handleListNovels(): Response {
+  return Response.json({ novels: listProjects() });
+}
+
+/** 新建小说：规划大纲 + 世界观圣经，返回项目。 */
+async function handleCreateNovel(req: Request): Promise<Response> {
+  let body: CreateNovelBody;
+  try {
+    body = (await req.json()) as CreateNovelBody;
+  } catch {
+    return Response.json({ error: "请求体不是合法 JSON。" }, { status: 400 });
+  }
+  const seed = (body.seed ?? "").trim();
+  if (!seed) return Response.json({ error: "缺少 seed（一句前提）。" }, { status: 400 });
+
+  try {
+    const engine = new NovelEngine({ client: new LLMClient() });
+    const project = await engine.startNovel(seed, body.chapterHint);
+    return Response.json({ project });
+  } catch (err) {
+    return Response.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+}
+
+/** 项目详情（元数据/大纲/记忆）。 */
+function handleNovelDetail(slug: string): Response {
+  if (!projectExists(slug)) return Response.json({ error: "项目不存在。" }, { status: 404 });
+  try {
+    return Response.json({ project: loadProject(slug) });
+  } catch (err) {
+    return Response.json(
+      { error: err instanceof Error ? err.message : String(err) },
+      { status: 500 },
+    );
+  }
+}
+
+/** 读取某一章成文（markdown）。 */
+function handleChapterProse(slug: string, n: number): Response {
+  if (!projectExists(slug)) return Response.json({ error: "项目不存在。" }, { status: 404 });
+  const md = loadChapterProse(slug, n);
+  if (md === null) return Response.json({ error: "该章尚未生成。" }, { status: 404 });
+  return Response.json({ n, markdown: md });
+}
+
+/** SSE：生成下一章，流式推送演出/成文/记忆事件。 */
+function handleGenerateNext(slug: string): Response {
+  if (!projectExists(slug)) return Response.json({ error: "项目不存在。" }, { status: 404 });
+  return sseResponse(async (send) => {
+    const engine = new NovelEngine({ client: new LLMClient(), onEvent: send });
+    await engine.generateNextChapter(slug);
+    send({ type: "done" });
   });
 }
 
@@ -134,12 +219,30 @@ const server = Bun.serve({
   idleTimeout: 0,
   async fetch(req) {
     const url = new URL(req.url);
-    if (url.pathname === "/api/play" && req.method === "GET") return handlePlay(url);
-    if (url.pathname === "/api/novelize" && req.method === "POST") return handleNovelize(req);
+    const { pathname } = url;
+
+    // 单幕即兴。
+    if (pathname === "/api/play" && req.method === "GET") return handlePlay(url);
+    if (pathname === "/api/novelize" && req.method === "POST") return handleNovelize(req);
+
+    // 多章小说。
+    if (pathname === "/api/novels" && req.method === "GET") return handleListNovels();
+    if (pathname === "/api/novels" && req.method === "POST") return handleCreateNovel(req);
+    const nextMatch = pathname.match(/^\/api\/novels\/([^/]+)\/next$/);
+    if (nextMatch && req.method === "GET") return handleGenerateNext(decodeURIComponent(nextMatch[1]!));
+    const proseMatch = pathname.match(/^\/api\/novels\/([^/]+)\/chapters\/(\d+)$/);
+    if (proseMatch && req.method === "GET") {
+      return handleChapterProse(decodeURIComponent(proseMatch[1]!), Number(proseMatch[2]));
+    }
+    const detailMatch = pathname.match(/^\/api\/novels\/([^/]+)$/);
+    if (detailMatch && req.method === "GET") return handleNovelDetail(decodeURIComponent(detailMatch[1]!));
+
     if (req.method !== "GET") return new Response("Method Not Allowed", { status: 405 });
-    return serveStatic(url.pathname);
+    // /novel 走多章界面。
+    if (pathname === "/novel") return serveStatic("/novel.html");
+    return serveStatic(pathname);
   },
 });
 
 console.log(`\x1b[35m武侠剧场\x1b[0m 已启动 → \x1b[36mhttp://localhost:${server.port}\x1b[0m`);
-console.log("\x1b[2m打开地址，左侧写开场看戏，看完点右侧「执笔成文」。Ctrl+C 退出。\x1b[0m");
+console.log("\x1b[2m单幕即兴：/ ；多章小说：/novel 。Ctrl+C 退出。\x1b[0m");

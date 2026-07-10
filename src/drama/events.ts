@@ -49,6 +49,23 @@ export type DramaEvent =
   /** 整幕结束。 */
   | { type: "done" }
   /** 出错（一般由服务端包裹后发出）。 */
-  | { type: "error"; message: string };
+  | { type: "error"; message: string }
+  // ── 多章小说层事件 ──────────────────────────────
+  /** 整书大纲就绪（建项目或修订后）。 */
+  | {
+      type: "outline";
+      title: string;
+      premise: string;
+      logline: string;
+      chapters: { n: number; title: string; goal: string; status: string }[];
+    }
+  /** 开始生成某一章。 */
+  | { type: "chapter-start"; n: number; title: string; goal: string }
+  /** 某一章成文完成。 */
+  | { type: "chapter-prose"; n: number; title: string; content: string }
+  /** 本章记忆已更新（供前端刷新记忆面板）。 */
+  | { type: "memory-updated"; summary: string; openThreads: string[]; latestEvent?: string }
+  /** 整书完成（无更多待写章节）。 */
+  | { type: "novel-complete"; chaptersWritten: number };
 
 export type DramaEventSink = (event: DramaEvent) => void;
