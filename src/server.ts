@@ -47,7 +47,11 @@ async function serveStatic(pathname: string): Promise<Response> {
     return new Response("Not Found", { status: 404 });
   }
   return new Response(file, {
-    headers: { "Content-Type": contentTypeFor(safeRel) },
+    headers: {
+      "Content-Type": contentTypeFor(safeRel),
+      // 开发用：禁用缓存，避免浏览器拿到旧版 app.js/style.css 造成前后端不匹配。
+      "Cache-Control": "no-cache, no-store, must-revalidate",
+    },
   });
 }
 

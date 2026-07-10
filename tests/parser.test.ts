@@ -66,4 +66,32 @@ describe("parseDirectorDecision", () => {
     expect(d.action).toBe("act");
     expect(d.actor).toBeUndefined();
   });
+
+  test("旁白夹带角色对白（引号台词）时丢弃旁白，仍继续行动", () => {
+    const d = parseDirectorDecision(
+      '{"stage":"柳三娘噙着笑：“马爷这话在理”","action":"act","actor":"柳三娘"}',
+      names,
+    );
+    expect(d.stage).toBeUndefined();
+    expect(d.action).toBe("act");
+    expect(d.actor).toBe("柳三娘");
+  });
+
+  test("旁白夹带“某某道：”式引语时也丢弃", () => {
+    const d = parseDirectorDecision(
+      '{"stage":"马瘸子干笑道：新人来了","action":"act","actor":"沈孤鸿"}',
+      names,
+    );
+    expect(d.stage).toBeUndefined();
+    expect(d.actor).toBe("沈孤鸿");
+  });
+
+  test("纯环境旁白保留", () => {
+    const d = parseDirectorDecision(
+      '{"stage":"院落里卷起一阵旋风，枯叶簌簌作响","action":"act","actor":"醉丐"}',
+      names,
+    );
+    expect(d.stage).toBe("院落里卷起一阵旋风，枯叶簌簌作响");
+    expect(d.actor).toBe("醉丐");
+  });
 });

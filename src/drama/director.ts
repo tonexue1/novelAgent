@@ -66,6 +66,14 @@ function str(v: unknown): string {
   return typeof v === "string" ? v.trim() : "";
 }
 
+/** 旁白里是否夹带了对白（中/英文引号或“道：/说：”式引语）——用于识别旁白越权替角色说话。 */
+function hasQuotedDialogue(text: string): boolean {
+  if (/[“”「」『』]/.test(text)) return true; // 中文/日式引号里的台词
+  if (/["'][^"']{2,}["']/.test(text)) return true; // 英文直引号包裹的一段话
+  if (/(道|说|问|答|喝|喊|笑)\s*[:：]/.test(text)) return true; // “某某道：” 式引语
+  return false;
+}
+
 /**
  * 解析导演每拍决策。actor 必须是在场人物之一，否则置空（交上层回退）。
  * 无法解析时默认继续演（action=act，actor 空），由上层选人 + maxBeats 兜底终止。纯函数。
@@ -77,7 +85,10 @@ export function parseDirectorDecision(text: string, validNames: string[]): Direc
   const rawAction = typeof obj.action === "string" ? obj.action.toLowerCase() : "";
   const action: DirectorDecision["action"] = rawAction === "end" ? "end" : "act";
 
-  const stage = typeof obj.stage === "string" && obj.stage.trim() ? obj.stage.trim() : undefined;
+  // 旁白只应是客观环境/氛围。若导演在旁白里塞进了角色对白（出现引号台词），
+  // 说明它越权替角色说话——直接丢弃这段旁白，让该角色自己在 act 拍里发声。
+  const rawStage = typeof obj.stage === "string" ? obj.stage.trim() : "";
+  const stage = rawStage && !hasQuotedDialogue(rawStage) ? rawStage : undefined;
   const reason = typeof obj.reason === "string" && obj.reason.trim() ? obj.reason.trim() : undefined;
   const rawActor = typeof obj.actor === "string" ? obj.actor.trim() : "";
   const actor = validNames.includes(rawActor) ? rawActor : undefined;
@@ -128,8 +139,13 @@ export class Director {
   ): Promise<DirectorDecision> {
     const system = [
       "你是这幕武侠戏的导演。基于背景与目前的场面，决定下一拍怎么走。",
-      "你可以先用一句旁白推动气氛或加入环境事件（如有人闯入、灯灭、马蹄声由远及近），也可以不加。",
+      "你可以先用一句【旁白】推动气氛或加入环境变数（如灯灭、风起、马蹄声由远及近、屋瓦坠落、有人推门而入），也可以留空不加。",
       '只输出一个 JSON 对象：{"stage":"可空的旁白/环境事件","action":"act"或"end","actor":"action=act时必须是在场人物之一的名字","reason":"一句话缘由"}',
+      "【旁白铁律】旁白是全知视角的舞台说明，只写环境、氛围、天气、场面变化这类客观事物：",
+      "- 绝不许替任何在场人物说话或做动作：不得出现人物对白（不得有引号台词），不得写“某某笑道／某某冷冷道／某某拔剑／某某转头看向谁”这类具体的人物言行或神态。",
+      "- 要让某个人物开口或出手，不要写进旁白，而应设 action=act 并把 actor 设为该人物，由他本人这一拍自己演。",
+      "- 即使是新登场/闯入者，旁白也只能交代“院门外有人拄拐踱入”这类客观事实；此人具体说什么、做什么表情动作，必须留到其后的 act 拍由该角色本人完成。",
+      "- 若这一拍没有纯环境性的内容可写，就把 stage 留空，直接让 actor 行动。",
       "调度准则：",
       "- 优先制造并推进冲突；让刚被点名、被挑衅或被针对的人有机会回应。",
       "- 避免同一个人连续独白太久，让不同人物轮番登场、彼此碰撞。",
