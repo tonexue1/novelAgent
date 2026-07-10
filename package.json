@@ -1,0 +1,19 @@
+{
+  "name": "wuxia-novel",
+  "version": "0.1.0",
+  "description": "武侠剧场：多 Agent 即兴演出（导演调度）+ 执笔人成文 (Bun + TypeScript)",
+  "type": "module",
+  "private": true,
+  "scripts": {
+    "start": "bun run src/index.ts",
+    "dev": "bun run src/index.ts",
+    "serve": "bun run src/server.ts",
+    "web": "bun run --hot src/server.ts",
+    "test": "bun test",
+    "typecheck": "tsc --noEmit"
+  },
+  "devDependencies": {
+    "@types/bun": "latest",
+    "typescript": "^5"
+  }
+}

@@ -1,0 +1,11 @@
+node_modules/
+.env
+*.log
+.DS_Store
+dist/
+bun.lockb
+
+# 执笔人 --save 生成的小说样例（demo 产物，不入库）
+wuxia-*.md
+chapter_*.md
+novel_*.md
