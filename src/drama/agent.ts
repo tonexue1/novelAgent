@@ -72,6 +72,20 @@ export class WuxiaDramaAgent implements Agent {
     this.onEvent?.(event);
   }
 
+  /**
+   * 生成开场。单幕模式失败可回退到内置 DEFAULT_SCENE（保证 demo 能跑）；
+   * 但多章模式【绝不回退】——DEFAULT_SCENE 里有沈孤鸿/柳三娘等固定角色，一旦灌进
+   * 连载正史就会污染 canon。多章下先重试一次，仍失败则抛错，交由上层重试整章。
+   */
+  private async openSceneOrFallback(seed: string, ctx?: DramaContext): Promise<Scene> {
+    const first = await this.director.openScene(seed, ctx);
+    if (first) return first;
+    if (!ctx) return DEFAULT_SCENE;
+    const retry = await this.director.openScene(seed, ctx);
+    if (retry) return retry;
+    throw new Error("导演两次都未能生成合法的开场场景（多章模式不回退到内置示例场景，以免污染正史）。");
+  }
+
   reset(): void {
     // 每一幕独立，无跨幕状态。
   }
@@ -90,11 +104,12 @@ export class WuxiaDramaAgent implements Agent {
   ): Promise<{ scene: Scene; transcript: Beat[]; seed: string }> {
     const seed = input.trim() || DEFAULT_SEED;
     this.emit({ type: "seed", seed });
+    const playStartedAt = Date.now();
 
     logger.step(1, "开场（导演生成人物与背景）");
     logger.info(`开场引子：${seed}`);
     this.emit({ type: "step", n: 1, title: "开场（导演生成人物与背景）" });
-    const scene: Scene = (await this.director.openScene(seed, ctx)) ?? DEFAULT_SCENE;
+    const scene: Scene = await this.openSceneOrFallback(seed, ctx);
 
     logger.info(`【背景】${scene.background}`);
     logger.info(`【登场人物】\n${renderCast(scene)}`);
@@ -113,7 +128,7 @@ export class WuxiaDramaAgent implements Agent {
     logger.step(2, "开演");
     this.emit({ type: "step", n: 2, title: "开演" });
     for (let beatNo = 1; beatNo <= this.maxBeats; beatNo++) {
-      const decision = await this.director.nextBeat(scene, transcript, beatNo, this.maxBeats);
+      const decision = await this.director.nextBeat(scene, transcript, beatNo, this.maxBeats, ctx);
 
       if (decision.stage) {
         transcript.push({ actor: "旁白", kind: "narration", content: decision.stage });
@@ -131,12 +146,17 @@ export class WuxiaDramaAgent implements Agent {
       const actor = actors.get(name);
       if (!actor) continue;
 
-      const content = await actor.act(scene, transcript);
+      const content = await actor.act(scene, transcript, undefined, ctx?.genrePersona);
       transcript.push({ actor: name, kind: "act", content });
       logger.info(`${name}：${content}`);
       this.emit({ type: "beat", actor: name, content });
     }
 
+    const actCount = transcript.filter((b) => b.kind === "act").length;
+    console.log(
+      `\x1b[36m[计时·对话] 共 ${transcript.length} 拍（${actCount} 次角色发言），` +
+        `耗时 ${((Date.now() - playStartedAt) / 1000).toFixed(1)}s\x1b[0m`,
+    );
     this.emit({ type: "play-complete" });
     return { scene, transcript, seed };
   }
@@ -150,7 +170,12 @@ export class WuxiaDramaAgent implements Agent {
   ): Promise<string> {
     logger.step(3, "成文（执笔人代笔）");
     this.emit({ type: "step", n: 3, title: "成文（执笔人代笔）" });
+    const proseStartedAt = Date.now();
     const prose = await this.novelist.write(scene, transcript, seed, ctx);
+    console.log(
+      `\x1b[36m[计时·成文] 生成 ${prose.length} 字，` +
+        `耗时 ${((Date.now() - proseStartedAt) / 1000).toFixed(1)}s\x1b[0m`,
+    );
     this.emit({ type: "prose", content: prose });
     this.emit({ type: "done" });
     return prose;

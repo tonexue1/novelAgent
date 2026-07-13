@@ -9,11 +9,18 @@ const $ = (s) => document.querySelector(s);
 const projectSelect = $("#project-select");
 const createForm = $("#create-form");
 const seedEl = $("#seed");
+const genreSelect = $("#genre-select");
+const genreCustom = $("#genre-custom");
+const styleSelect = $("#style-select");
+const styleCustom = $("#style-custom");
+const styleIntensityEl = $("#style-intensity");
+const chapterCountEl = $("#chapter-count");
 const createBtn = $("#create-btn");
 const samplesEl = $("#samples");
 const outlineEl = $("#outline");
 const outlineTitle = $("#outline-title");
 const outlineLogline = $("#outline-logline");
+const arcInfoEl = $("#arc-info");
 const chapterListEl = $("#chapter-list");
 const genBar = $("#gen-bar");
 const genNextBtn = $("#gen-next");
@@ -59,6 +66,155 @@ function firstChar(name) {
   return m ? m[m.length - 1] : name.slice(0, 1);
 }
 
+// ── 题材 ────────────────────────────────────────
+// 每个题材给几条贴题材的示例前提；custom / 未知题材回落到通用。
+const GENRE_SAMPLES = {
+  wuxia: [
+    "少年背负灭门血仇，下山寻仇，却卷入一桩夺谱惊局。",
+    "女捕头查一桩连环命案，线索直指二十年前的江湖旧盟。",
+  ],
+  xianxia: [
+    "凡根少年误吞一缕上古剑魂，被卷入九宗争夺的登仙之路。",
+    "散修少女以一枚残破玉简，叩问长生，搅动三界棋局。",
+  ],
+  xuanhuan: [
+    "废材少爷觉醒逆天血脉，从家族弃子走向大陆之巅。",
+    "少年得远古神魔传承，在万族林立的大陆逆流而上。",
+  ],
+  urban: [
+    "普通上班族一夜觉醒异能，被拽进都市异能者的暗战。",
+    "退伍兵回城守护家园，却发现城市底下藏着修行世家。",
+  ],
+  scifi: [
+    "星舰工程师发现一段禁忌代码，牵出人类文明的惊天谎言。",
+    "末世幸存者靠一枚神秘芯片，在废土上重建希望。",
+  ],
+  fantasy: [
+    "农家少年拔出封印的魔剑，被卷入王国与教会的千年之争。",
+    "落魄法师带着会说话的龙蛋，踏上寻找失落神器的旅途。",
+  ],
+  _default: [
+    "一个小人物意外卷入惊天阴谋，被迫踏上改变命运的旅程。",
+    "宿敌两人被迫联手，共同面对一个更可怕的威胁。",
+  ],
+};
+
+// 前端兜底题材（与后端 GENRES 对齐）：即便 /api/genres 拉取失败/旧服务端无该路由，
+// 下拉也始终有值，不会空白。
+const FALLBACK_GENRES = [
+  { id: "wuxia", label: "武侠" },
+  { id: "xianxia", label: "仙侠" },
+  { id: "xuanhuan", label: "玄幻" },
+  { id: "urban", label: "都市异能" },
+  { id: "scifi", label: "科幻" },
+  { id: "fantasy", label: "西方奇幻" },
+];
+
+function populateGenreSelect(genres) {
+  genreSelect.innerHTML = "";
+  for (const g of genres) {
+    const opt = document.createElement("option");
+    opt.value = g.id;
+    opt.textContent = g.label;
+    genreSelect.appendChild(opt);
+  }
+  const custom = document.createElement("option");
+  custom.value = "__custom__";
+  custom.textContent = "自定义…";
+  genreSelect.appendChild(custom);
+}
+
+function currentGenreValue() {
+  const v = genreSelect.value;
+  if (v === "__custom__") return genreCustom.value.trim();
+  return v;
+}
+
+function renderSamples() {
+  const key = genreSelect.value === "__custom__" ? "_default" : genreSelect.value;
+  const list = GENRE_SAMPLES[key] || GENRE_SAMPLES._default;
+  samplesEl.hidden = false;
+  samplesEl.innerHTML = list
+    .map((s) => `<button class="chip" type="button">${escapeHtml(s)}</button>`)
+    .join("");
+}
+
+function onGenreChange() {
+  const isCustom = genreSelect.value === "__custom__";
+  genreCustom.hidden = !isCustom;
+  if (isCustom) genreCustom.focus();
+  renderSamples();
+}
+
+// 前端兜底风味（与后端 STYLE_CARDS 对齐）：即便 /api/styles 拉取失败/旧服务端无该路由，
+// 下拉也始终有值。首项"不启用"表示回落题材默认腔调。
+const FALLBACK_STYLES = [
+  { id: "chendong", label: "辰东式史诗" },
+  { id: "gulong", label: "古龙式冷硬" },
+  { id: "jinyong", label: "金庸式醇厚" },
+];
+
+function populateStyleSelect(styles) {
+  styleSelect.innerHTML = "";
+  const none = document.createElement("option");
+  none.value = "none";
+  none.textContent = "不启用（题材默认腔调）";
+  styleSelect.appendChild(none);
+  for (const s of styles) {
+    const opt = document.createElement("option");
+    opt.value = s.id;
+    opt.textContent = s.label;
+    if (s.tagline) opt.title = s.tagline;
+    styleSelect.appendChild(opt);
+  }
+  const custom = document.createElement("option");
+  custom.value = "__custom__";
+  custom.textContent = "自定义…";
+  styleSelect.appendChild(custom);
+}
+
+function currentStyleValue() {
+  const v = styleSelect.value;
+  if (v === "__custom__") return styleCustom.value.trim();
+  return v;
+}
+
+function onStyleChange() {
+  const isCustom = styleSelect.value === "__custom__";
+  styleCustom.hidden = !isCustom;
+  if (isCustom) styleCustom.focus();
+}
+
+async function loadStyles() {
+  populateStyleSelect(FALLBACK_STYLES);
+  try {
+    const res = await fetch("/api/styles");
+    if (res.ok) {
+      const data = await res.json();
+      const styles = data.styles || [];
+      if (styles.length) populateStyleSelect(styles);
+    }
+  } catch {
+    /* 拉取失败保留兜底列表 */
+  }
+}
+
+async function loadGenres() {
+  // 先用兜底列表铺满，保证下拉立即可用；再尝试用后端返回的列表覆盖。
+  populateGenreSelect(FALLBACK_GENRES);
+  try {
+    const res = await fetch("/api/genres");
+    if (res.ok) {
+      const data = await res.json();
+      const genres = data.genres || [];
+      if (genres.length) populateGenreSelect(genres);
+    }
+  } catch {
+    /* 拉取失败保留兜底列表 */
+  }
+  renderSamples();
+}
+
 // ── 项目列表 / 详情 ─────────────────────────────
 async function loadProjects(selectSlug) {
   const res = await fetch("/api/novels");
@@ -99,14 +255,39 @@ async function selectProject(slug) {
 
 // ── 大纲渲染 ────────────────────────────────────
 function renderOutlineFromProject(project) {
-  renderOutline(project.meta.title, project.outline.logline, project.outline.chapters);
+  const o = project.outline;
+  renderOutline(project.meta.title, o.logline, o.chapters, {
+    mode: o.mode,
+    arcs: o.arcs,
+    currentArc: o.currentArc,
+    targetChapters: o.targetChapters,
+    chaptersWritten: project.meta.chaptersWritten,
+  });
 }
 
-function renderOutline(title, logline, chapters) {
+function renderArcInfo(info) {
+  if (!info || info.mode !== "rolling" || !info.arcs || !info.arcs.length) {
+    arcInfoEl.hidden = true;
+    return;
+  }
+  const total = info.arcs.length;
+  const cur = info.currentArc || 1;
+  const curArc = info.arcs.find((a) => a.n === cur);
+  const written = info.chaptersWritten ?? 0;
+  const target = info.targetChapters ?? "";
+  arcInfoEl.hidden = false;
+  arcInfoEl.innerHTML =
+    `<span class="arc-badge">分卷连载</span>` +
+    `第 ${cur}/${total} 卷${curArc ? `《${escapeHtml(curArc.title)}》` : ""}` +
+    ` · 已写 ${written}${target ? `/${target}` : ""} 章`;
+}
+
+function renderOutline(title, logline, chapters, arcInfo) {
   outlineEl.hidden = false;
   samplesEl.hidden = true;
   outlineTitle.textContent = `《${title}》`;
   outlineLogline.textContent = logline || "";
+  renderArcInfo(arcInfo);
   chapterListEl.innerHTML = "";
   for (const c of chapters) {
     const li = document.createElement("li");
@@ -271,7 +452,12 @@ function genNext() {
     try { handleEvent(JSON.parse(e.data)); } catch { /* 心跳忽略 */ }
   };
   source.onerror = () => {
-    if (generating) finishGen("error", "连接中断，请重试。");
+    // 传输层断开：EventSource 会自动重连，并带上 Last-Event-ID 让服务端从断点续传。
+    // 所以这里不放弃、不 close（close 会阻止自动重连）；只有真正的失败会由服务端
+    // 通过 error 事件告知。生成在后台独立进行，重连后会把剩余事件补齐直到 done。
+    if (generating && source && source.readyState === EventSource.CONNECTING) {
+      setStatus("busy", "连接中断，正在自动重连…（生成仍在后台进行）");
+    }
   };
 }
 
@@ -301,7 +487,16 @@ function handleEvent(ev) {
       clearTyping();
       break;
     case "outline":
-      renderOutline(ev.title, ev.logline, ev.chapters);
+      renderOutline(ev.title, ev.logline, ev.chapters, {
+        mode: ev.mode ?? (ev.arcs ? "rolling" : undefined),
+        arcs: ev.arcs,
+        currentArc: ev.currentArc,
+        targetChapters: ev.targetChapters,
+        chaptersWritten: ev.chapters.filter((c) => c.status === "written").length,
+      });
+      break;
+    case "arc-start":
+      setStatus("busy", `第 ${ev.n} 卷《${ev.title}》开卷，规划本卷章节…`);
       break;
     case "chapter-prose":
       clearTyping();
@@ -378,14 +573,27 @@ async function readChapter(n, title) {
 async function createNovel() {
   const seed = seedEl.value.trim();
   if (!seed || generating) return;
+  // 章节数 → 提示词。留空/非法则不传，后端用默认区间。
+  const n = parseInt(chapterCountEl.value, 10);
+  const chapterHint = Number.isInteger(n) && n >= 3 ? `${n} 章（请严格规划为 ${n} 章）` : undefined;
+  const genre = currentGenreValue();
+  const style = currentStyleValue();
+  const styleIntensity = styleIntensityEl ? styleIntensityEl.value : "medium";
   createBtn.disabled = true;
   createBtn.textContent = "立意谋篇中…";
   setStatus("busy", "规划师铺陈大纲与世界观…");
   try {
+    const payload = { seed };
+    if (chapterHint) payload.chapterHint = chapterHint;
+    if (genre) payload.genre = genre;
+    if (style && style !== "none") {
+      payload.style = style;
+      payload.styleIntensity = styleIntensity;
+    }
     const res = await fetch("/api/novels", {
       method: "POST",
       headers: { "Content-Type": "application/json" },
-      body: JSON.stringify({ seed }),
+      body: JSON.stringify(payload),
     });
     const data = await res.json();
     if (!res.ok || data.error) throw new Error(data.error || `HTTP ${res.status}`);
@@ -411,9 +619,13 @@ projectSelect.addEventListener("change", () => {
   if (!generating) selectProject(projectSelect.value).catch((err) => setStatus("error", err.message));
 });
 genNextBtn.addEventListener("click", genNext);
+genreSelect.addEventListener("change", onGenreChange);
+styleSelect.addEventListener("change", onStyleChange);
 samplesEl.addEventListener("click", (e) => {
   const chip = e.target.closest(".chip");
   if (chip) { seedEl.value = chip.textContent.trim(); seedEl.focus(); }
 });
 
+loadGenres().catch(() => {});
+loadStyles().catch(() => {});
 loadProjects().catch(() => {});

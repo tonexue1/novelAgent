@@ -4,6 +4,8 @@ import { WuxiaDramaAgent } from "./drama/agent.ts";
 import type { DramaEvent } from "./drama/events.ts";
 import type { Scene, Beat } from "./drama/scene.ts";
 import { NovelEngine } from "./story/engine.ts";
+import { GENRES } from "./story/genre.ts";
+import { loadStyleCards } from "./story/style.ts";
 import {
   listProjects,
   loadProject,
@@ -70,11 +72,14 @@ async function serveStatic(pathname: string): Promise<Response> {
   });
 }
 
+/** SSE 发送回调：可选带一个事件序号 id，供 EventSource 断线重连时（Last-Event-ID）续传。 */
+type SseSend = (event: DramaEvent, id?: number) => void;
+
 /**
  * 把一个"边跑边发事件"的任务包成 SSE 响应：自带心跳、错误包裹与收尾关闭。
  * run 拿到 send 回调，任意时刻推 {@link DramaEvent}；抛错会被转成 error 事件。
  */
-function sseResponse(run: (send: (e: DramaEvent) => void) => Promise<void>): Response {
+function sseResponse(run: (send: SseSend) => Promise<void>): Response {
   const encoder = new TextEncoder();
   let closed = false;
   let heartbeat: ReturnType<typeof setInterval> | undefined;
@@ -99,15 +104,20 @@ function sseResponse(run: (send: (e: DramaEvent) => void) => Promise<void>): Res
           cleanup();
         }
       };
-      const send = (event: DramaEvent) =>
-        safeEnqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+      const send: SseSend = (event, id) => {
+        const prefix = id !== undefined ? `id: ${id}\n` : "";
+        safeEnqueue(encoder.encode(`${prefix}data: ${JSON.stringify(event)}\n\n`));
+      };
       // 心跳：一拍戏可能要等好几秒的 LLM 调用，期间连接会"空闲"。定时发一条
       // SSE 注释行，既重置底层 socket 的 idle 计时，又能穿过中间代理不被掐断。
       heartbeat = setInterval(() => safeEnqueue(encoder.encode(`: keepalive\n\n`)), 5000);
       try {
         await run(send);
       } catch (err) {
-        send({ type: "error", message: err instanceof Error ? err.message : String(err) });
+        const message = err instanceof Error ? err.message : String(err);
+        // 同时打到服务端终端，方便排查（前端只看到一行摘要）。
+        console.error(`\x1b[31m[SSE 任务出错]\x1b[0m ${message}`);
+        send({ type: "error", message });
       } finally {
         cleanup();
         try {
@@ -144,11 +154,31 @@ function handlePlay(url: URL): Response {
 interface CreateNovelBody {
   seed?: string;
   chapterHint?: string;
+  /** 题材：预设 id/中文 label，或自定义题材名；空则默认武侠。 */
+  genre?: string;
+  /** 写作风味：预设 id/label，或自定义腔调；空/none 则不启用。 */
+  style?: string;
+  /** 风味强度：light/medium/strong；空则 medium。 */
+  styleIntensity?: string;
 }
 
 /** 列出所有小说项目。 */
 function handleListNovels(): Response {
   return Response.json({ novels: listProjects() });
+}
+
+/** 列出可选题材（供前端下拉）。 */
+function handleListGenres(): Response {
+  return Response.json({
+    genres: GENRES.map((g) => ({ id: g.id, label: g.label })),
+  });
+}
+
+/** 列出可选写作风味（供前端下拉，每次读盘以反映新增/修改的卡）。 */
+function handleListStyles(): Response {
+  return Response.json({
+    styles: loadStyleCards().map((s) => ({ id: s.id, label: s.label, tagline: s.tagline })),
+  });
 }
 
 /** 新建小说：规划大纲 + 世界观圣经，返回项目。 */
@@ -164,7 +194,13 @@ async function handleCreateNovel(req: Request): Promise<Response> {
 
   try {
     const engine = new NovelEngine({ client: new LLMClient() });
-    const project = await engine.startNovel(seed, body.chapterHint);
+    const project = await engine.startNovel(
+      seed,
+      body.chapterHint,
+      body.genre,
+      body.style,
+      body.styleIntensity,
+    );
     return Response.json({ project });
   } catch (err) {
     return Response.json(
@@ -195,13 +231,96 @@ function handleChapterProse(slug: string, n: number): Response {
   return Response.json({ n, markdown: md });
 }
 
-/** SSE：生成下一章，流式推送演出/成文/记忆事件。 */
-function handleGenerateNext(slug: string): Response {
+/**
+ * 一部小说"正在生成中"的会话：生成任务在后台独立运行（不绑定任何一条连接），
+ * 事件按序号追加进 events 缓冲；每条 SSE 连接只是订阅者。这样：
+ *   - 客户端中途断线/自动重连，可凭 Last-Event-ID 从断点续传，绝不丢结果；
+ *   - 同一部小说的重复 /next 请求会订阅同一次生成，绝不并发重复演同一章；
+ *   - 生成成败与连接生死无关，结果始终落盘并可回放。
+ */
+interface GenSession {
+  events: DramaEvent[];
+  subscribers: Set<() => void>;
+  done: boolean;
+}
+
+const sessions = new Map<string, GenSession>();
+
+/** 后台启动一次"生成下一章"，事件写入会话缓冲并广播给所有订阅者。 */
+function startGeneration(slug: string): GenSession {
+  const session: GenSession = { events: [], subscribers: new Set(), done: false };
+  sessions.set(slug, session);
+  const notify = () => {
+    for (const fn of [...session.subscribers]) fn();
+  };
+  const push = (event: DramaEvent) => {
+    session.events.push(event);
+    notify();
+  };
+  void (async () => {
+    try {
+      const engine = new NovelEngine({ client: new LLMClient(), onEvent: push });
+      await engine.generateNextChapter(slug);
+      session.events.push({ type: "done" });
+    } catch (err) {
+      const message = err instanceof Error ? err.message : String(err);
+      console.error(`\x1b[31m[生成出错]\x1b[0m ${message}`);
+      session.events.push({ type: "error", message });
+    } finally {
+      session.done = true;
+      notify();
+      // 生成结束后保留一段时间，供最后的断线重连回放尾部；随后清理释放内存。
+      setTimeout(() => {
+        if (sessions.get(slug) === session) sessions.delete(slug);
+      }, 60_000);
+    }
+  })();
+  return session;
+}
+
+/**
+ * SSE：生成下一章。首次连接（无 Last-Event-ID）启动或订阅生成；断线重连
+ * （带 Last-Event-ID）只从断点续传、绝不重启生成，也不会误报"已在生成中"。
+ */
+function handleGenerateNext(slug: string, lastEventId: string | null): Response {
   if (!projectExists(slug)) return Response.json({ error: "项目不存在。" }, { status: 404 });
+
+  const isReconnect = lastEventId !== null && lastEventId !== "";
+  const resumeFrom = isReconnect ? Number(lastEventId) + 1 : 0;
+  let session = sessions.get(slug);
+
+  if (!session || session.done) {
+    if (isReconnect) {
+      // 断线重连但生成已结束/丢失：能回放多少尾部就回放多少，随后关闭，绝不重启生成。
+      const finished = session;
+      return sseResponse(async (send) => {
+        if (finished) {
+          for (let i = Math.max(0, resumeFrom); i < finished.events.length; i++) {
+            send(finished.events[i]!, i);
+          }
+        }
+      });
+    }
+    session = startGeneration(slug);
+  }
+
+  const active = session;
   return sseResponse(async (send) => {
-    const engine = new NovelEngine({ client: new LLMClient(), onEvent: send });
-    await engine.generateNextChapter(slug);
-    send({ type: "done" });
+    let idx = Math.max(0, resumeFrom);
+    await new Promise<void>((resolve) => {
+      const flush = () => {
+        while (idx < active.events.length) {
+          send(active.events[idx]!, idx);
+          idx++;
+        }
+        if (active.done) {
+          active.subscribers.delete(flush);
+          resolve();
+        }
+      };
+      active.subscribers.add(flush);
+      flush(); // 立刻回放已缓冲事件（可能生成已在此刻完成）。
+    });
   });
 }
 
@@ -232,6 +351,7 @@ async function handleNovelize(req: Request): Promise<Response> {
     return Response.json({ prose });
   } catch (err) {
     const message = err instanceof Error ? err.message : String(err);
+    console.error(`\x1b[31m[成文出错]\x1b[0m ${message}`);
     return Response.json({ error: message }, { status: 500 });
   }
 }
@@ -249,10 +369,14 @@ const server = Bun.serve({
     if (pathname === "/api/novelize" && req.method === "POST") return handleNovelize(req);
 
     // 多章小说。
+    if (pathname === "/api/genres" && req.method === "GET") return handleListGenres();
+    if (pathname === "/api/styles" && req.method === "GET") return handleListStyles();
     if (pathname === "/api/novels" && req.method === "GET") return handleListNovels();
     if (pathname === "/api/novels" && req.method === "POST") return handleCreateNovel(req);
     const nextMatch = pathname.match(/^\/api\/novels\/([^/]+)\/next$/);
-    if (nextMatch && req.method === "GET") return handleGenerateNext(decodeURIComponent(nextMatch[1]!));
+    if (nextMatch && req.method === "GET") {
+      return handleGenerateNext(decodeURIComponent(nextMatch[1]!), req.headers.get("last-event-id"));
+    }
     const proseMatch = pathname.match(/^\/api\/novels\/([^/]+)\/chapters\/(\d+)$/);
     if (proseMatch && req.method === "GET") {
       return handleChapterProse(decodeURIComponent(proseMatch[1]!), Number(proseMatch[2]));

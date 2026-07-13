@@ -1,0 +1,87 @@
+import type { GenreSpec } from "./types.ts";
+
+/**
+ * 题材目录与解析。把"武侠/玄幻/仙侠…"抽象成可注入提示词的 {@link GenreSpec}，
+ * 让规划/导演/角色/执笔/档案各环节按题材生成，而不再写死武侠。
+ *
+ * 纯数据 + 纯函数，无 LLM、无副作用，可单测。
+ */
+
+/** 预设题材目录。worldGuidance 逐题材定制，指导 worldBible 各字段贴题材。 */
+export const GENRES: GenreSpec[] = [
+  {
+    id: "wuxia",
+    label: "武侠",
+    persona: "武侠小说",
+    worldGuidance:
+      "力量体系为武功招式与内力（无超自然神魔）；势力为门派、帮会、镖局、朝廷；关键信物为秘籍、名刀名剑、令牌、密函；基调是写实的江湖恩仇、快意与人情。",
+    styleGuidance: "冷硬写实的江湖气，招式点到为止、重人情与义气，不堆砌辞藻。",
+  },
+  {
+    id: "xianxia",
+    label: "仙侠",
+    persona: "仙侠修真小说",
+    worldGuidance:
+      "力量体系用修炼境界（练气、筑基、金丹、元婴、化神、渡劫、飞升等），讲灵根、功法、心境；势力为修仙宗门、世家、散修联盟；关键信物为法宝、丹药、灵石、天材地宝、传承玉简；世界含洞天福地、秘境、天劫与仙凡之隔。",
+    styleGuidance: "缥缈大气、有仙家意境与因果宿命感，兼顾修炼爽感与心境成长。",
+  },
+  {
+    id: "xuanhuan",
+    label: "玄幻",
+    persona: "玄幻小说",
+    worldGuidance:
+      "力量体系可为斗气、魔法、血脉、功法等级或异能，层层突破；世界可有多片大陆、多种族（人、妖、魔、兽等）、异兽与远古遗迹；势力为学院、帝国、宗门、种族部落；关键信物为功法、神器、血脉传承、异火异宝。",
+    styleGuidance: "想象奇诡、格局宏大，力量成长清晰，敢写超凡设定。",
+  },
+  {
+    id: "urban",
+    label: "都市异能",
+    persona: "都市异能小说",
+    worldGuidance:
+      "现代都市为舞台，超自然/异能隐藏于日常之下；力量为觉醒异能、古武、超凡血脉；势力为异能者组织、财阀、特勤局、隐世家族；关键信物为异宝、契约、身份令牌；科技与超自然并存。",
+    styleGuidance: "节奏明快、现代口语，异能与现实碰撞出反差与爽感。",
+  },
+  {
+    id: "scifi",
+    label: "科幻",
+    persona: "科幻小说",
+    worldGuidance:
+      "力量/优势来自科技：机甲、基因改造、脑机接口、纳米、AI、超能力等，需自洽的科技逻辑；势力为星际联邦、巨型公司、殖民地、军团、AI 集群；关键信物为装备、芯片、飞船、核心代码；世界含星际、赛博都市或末世设定。",
+    styleGuidance: "冷峻思辨、术语克制而自洽，重点在设定张力与人的处境。",
+  },
+  {
+    id: "fantasy",
+    label: "西方奇幻",
+    persona: "西方奇幻小说",
+    worldGuidance:
+      "剑与魔法的世界：法术体系、职业（战士、法师、盗贼、牧师等）、种族（精灵、矮人、兽人、龙等）；势力为王国、教会、法师塔、冒险者公会；关键信物为魔剑、法杖、神器、卷轴；世界含大陆地图、神祇与远古史诗。",
+    styleGuidance: "史诗感与异域风情，命名与风物偏西式，重世界观厚度。",
+  },
+];
+
+/** 默认题材：武侠（旧档无题材、或空输入时回落）。 */
+export const DEFAULT_GENRE: GenreSpec = GENRES[0]!;
+
+/**
+ * 把用户输入（题材 id、中文 label，或自定义题材名）解析成 {@link GenreSpec}。
+ * - 命中预设 id/label → 返回预设。
+ * - 非空但不匹配 → 构造一个自定义题材（通用世界观引导）。
+ * - 空/undefined → 默认武侠。
+ */
+export function resolveGenre(input?: string | null): GenreSpec {
+  const v = (input ?? "").trim();
+  if (!v) return DEFAULT_GENRE;
+  const lower = v.toLowerCase();
+  const hit = GENRES.find((g) => g.id === lower || g.label === v);
+  if (hit) return hit;
+  // 自定义题材：沿用通用世界观骨架，persona 由题材名派生。
+  const persona = /小说$/.test(v) ? v : `${v}小说`;
+  return {
+    id: "custom",
+    label: v,
+    persona,
+    worldGuidance:
+      "力量体系、势力组织、关键信物与世界规则都要紧扣该题材的典型设定，具体、自洽、不与常识及既定设定矛盾。",
+    styleGuidance: "",
+  };
+}

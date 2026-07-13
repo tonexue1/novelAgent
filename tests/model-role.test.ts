@@ -1,4 +1,4 @@
-import { describe, expect, test, afterEach } from "bun:test";
+import { describe, expect, test, beforeEach, afterEach } from "bun:test";
 import { modelForRole } from "../src/core/config.ts";
 
 const KEYS = [
@@ -6,6 +6,12 @@ const KEYS = [
   "OPENAI_MODEL_NOVELIST",
   "OPENAI_MODEL_DIRECTOR",
 ];
+
+// .env 里可能配了 OPENAI_MODEL_<ROLE>（Bun 测试会自动加载 .env），每个用例前先清空，
+// 保证测试不受本机配置影响。
+beforeEach(() => {
+  for (const k of KEYS) delete process.env[k];
+});
 
 afterEach(() => {
   for (const k of KEYS) delete process.env[k];

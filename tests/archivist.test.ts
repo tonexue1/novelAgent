@@ -56,4 +56,31 @@ describe("parseMemoryUpdate", () => {
     const u = parseMemoryUpdate('结果如下：\n{"event":"决战开始"}\n完毕');
     expect(u.event).toBe("决战开始");
   });
+
+  test("解析道具账本、别名与当前进度锚点", () => {
+    const u = parseMemoryUpdate(
+      JSON.stringify({
+        event: "阿九夺回真拓本",
+        currentLocation: "断魂渡渡口，僵持已破",
+        props: [
+          { name: "真拓本", holder: "阿九", location: "贴身油布包", status: "完好" },
+          { name: "", holder: "无名", location: "x", status: "y" },
+        ],
+        characterUpdates: [
+          { name: "封沉岳", aliases: ["师叔", "左腿瘸人"], status: "在世" },
+        ],
+      }),
+    );
+    expect(u.currentLocation).toBe("断魂渡渡口，僵持已破");
+    expect(u.props).toHaveLength(1);
+    expect(u.props[0]!.name).toBe("真拓本");
+    expect(u.props[0]!.holder).toBe("阿九");
+    expect(u.characterUpdates[0]!.aliases).toEqual(["师叔", "左腿瘸人"]);
+  });
+
+  test("缺 props/currentLocation 时给安全默认", () => {
+    const u = parseMemoryUpdate("{}");
+    expect(u.props).toEqual([]);
+    expect(u.currentLocation).toBe("");
+  });
 });

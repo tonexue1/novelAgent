@@ -27,18 +27,56 @@
           </div>
 
           <form id="create-form" class="create-form" autocomplete="off">
+            <div class="create-row">
+              <label class="genre-pick">
+                题材
+                <select id="genre-select" title="题材"></select>
+              </label>
+              <input
+                id="genre-custom"
+                class="genre-custom"
+                type="text"
+                placeholder="输入自定义题材，如：无限流"
+                hidden
+              />
+              <label class="chapter-count">
+                篇幅
+                <input id="chapter-count" type="number" min="3" max="2000" step="1" value="10" />
+                章
+              </label>
+            </div>
+
+            <div class="create-row">
+              <label class="genre-pick">
+                风味
+                <select id="style-select" title="写作风味"></select>
+              </label>
+              <input
+                id="style-custom"
+                class="genre-custom"
+                type="text"
+                placeholder="输入自定义腔调，如：冷峻黑色幽默"
+                hidden
+              />
+              <label class="genre-pick">
+                强度
+                <select id="style-intensity" title="风味强度">
+                  <option value="light">淡入</option>
+                  <option value="medium" selected>适中</option>
+                  <option value="strong">浓墨</option>
+                </select>
+              </label>
+            </div>
             <textarea id="seed" rows="2" placeholder="写一句前提，开一部新书……"></textarea>
             <button id="create-btn" class="write-btn" type="submit">立意开书</button>
           </form>
 
-          <div class="samples" id="samples">
-            <button class="chip" type="button">少年背负灭门血仇，下山寻仇，却卷入一桩夺谱惊局。</button>
-            <button class="chip" type="button">女捕头查一桩连环命案，线索直指二十年前的江湖旧盟。</button>
-          </div>
+          <div class="samples" id="samples"></div>
 
           <div id="outline" class="outline" hidden>
             <div class="outline-title" id="outline-title"></div>
             <p class="outline-logline" id="outline-logline"></p>
+            <div class="arc-info" id="arc-info" hidden></div>
             <ol class="chapter-list" id="chapter-list"></ol>
           </div>
         </div>

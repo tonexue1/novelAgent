@@ -58,7 +58,17 @@ export type DramaEvent =
       premise: string;
       logline: string;
       chapters: { n: number; title: string; goal: string; status: string }[];
+      /** 规划模式（"whole" | "rolling"）。 */
+      mode?: string;
+      /** 分卷路线图（仅 rolling 模式）。 */
+      arcs?: { n: number; title: string; summary: string; chapters: number; status: string }[];
+      /** 当前活跃卷号（仅 rolling 模式）。 */
+      currentArc?: number;
+      /** 目标总章数（仅 rolling 模式）。 */
+      targetChapters?: number;
     }
+  /** 开始展开新的一卷（仅 rolling 模式）。 */
+  | { type: "arc-start"; n: number; title: string; summary: string }
   /** 开始生成某一章。 */
   | { type: "chapter-start"; n: number; title: string; goal: string }
   /** 某一章成文完成。 */

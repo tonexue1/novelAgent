@@ -58,6 +58,25 @@ export interface DramaContext {
   openThreads: string;
   /** 上一章结尾片段，保证承接。 */
   previousChapterTail?: string;
+  /** 已故人物名单（渲染好的文本）：这些人不得以在世身份登场。 */
+  deadRoster?: string;
+  /** 关键道具账本（渲染好的文本）：每件道具当前持有者/位置。 */
+  propLedger?: string;
+  /** 当前故事推进到的地点/局面锚点，避免原地打转。 */
+  currentLocation?: string;
+  /** 已发生大事记（渲染好的文本），供"勿重复"对账。 */
+  achievements?: string;
+  /** 题材定位短语（如"仙侠修真小说"），替换提示词里写死的"武侠"。缺省视为武侠。 */
+  genrePersona?: string;
+  /** 题材文笔/腔调提示（可空）。 */
+  genreStyle?: string;
+  /**
+   * 写作风味卡（渲染好的文本，强注入执笔成文）。承载「作者笔法」——句式/意象/语气/
+   * 名场面写法/章末钩子。只作用于叙述层，不覆盖人物各自的说话腔调。可空。
+   */
+  narrationStyle?: string;
+  /** 写作风味的精简版（一句话，弱注入导演旁白/开场）。可空。 */
+  narrationStyleBrief?: string;
 }
 
 /** 渲染出场人物名单（喂给导演/角色的公开信息）。 */

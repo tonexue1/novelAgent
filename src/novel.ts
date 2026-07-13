@@ -67,9 +67,15 @@ function usage(): void {
   );
 }
 
-async function cmdNew(seed: string, auto: boolean): Promise<void> {
+async function cmdNew(
+  seed: string,
+  auto: boolean,
+  genre?: string,
+  style?: string,
+  intensity?: string,
+): Promise<void> {
   const engine = new NovelEngine({ client: new LLMClient(), onEvent: printEvent });
-  const project = await engine.startNovel(seed);
+  const project = await engine.startNovel(seed, undefined, genre, style, intensity);
   const slug = project.meta.slug;
 
   if (!auto) {
@@ -116,6 +122,16 @@ async function main(): Promise<void> {
   const args = process.argv.slice(2);
   const cmd = args[0];
 
+  // 题材：--genre=仙侠（可选，仅新建时生效）。
+  const genreFlag = args.find((a) => a.startsWith("--genre="));
+  const genre = genreFlag ? genreFlag.slice("--genre=".length).trim() : undefined;
+
+  // 写作风味：--style=辰东式史诗 / --style=chendong；强度 --intensity=strong（仅新建时生效）。
+  const styleFlag = args.find((a) => a.startsWith("--style="));
+  const style = styleFlag ? styleFlag.slice("--style=".length).trim() : undefined;
+  const intensityFlag = args.find((a) => a.startsWith("--intensity="));
+  const intensity = intensityFlag ? intensityFlag.slice("--intensity=".length).trim() : undefined;
+
   if (cmd === "--list" || cmd === "list") {
     cmdList();
     return;
@@ -127,16 +143,16 @@ async function main(): Promise<void> {
     return;
   }
   if (cmd === "--auto" || cmd === "auto") {
-    const seed = args.slice(1).join(" ").trim();
+    const seed = args.slice(1).filter((a) => !a.startsWith("--")).join(" ").trim();
     if (!seed) return usage();
-    await cmdNew(seed, true);
+    await cmdNew(seed, true, genre, style, intensity);
     return;
   }
 
   // 默认：把全部非 flag 参数当作前提，新建并写第 1 章。
   const seed = args.filter((a) => !a.startsWith("--")).join(" ").trim();
   if (!seed) return usage();
-  await cmdNew(seed, false);
+  await cmdNew(seed, false, genre, style, intensity);
 }
 
 main().catch((err) => {

@@ -1,5 +1,11 @@
 import { describe, expect, test } from "bun:test";
-import { parseOutline, parseWorldBible } from "../src/story/planner.ts";
+import {
+  parseOutline,
+  parseWorldBible,
+  parseSkeleton,
+  parseTargetChapters,
+  normalizeActCounts,
+} from "../src/story/planner.ts";
 
 describe("parseOutline", () => {
   test("解析完整大纲结果并顺序编号", () => {
@@ -41,6 +47,14 @@ describe("parseOutline", () => {
     const r = parseOutline('{"chapters":[{"title":"a","goal":"g"},{"title":"无目标"}]}');
     expect(r!.outline.chapters).toHaveLength(1);
   });
+
+  test("剥离标题里的'第X章/第X回'编号前缀", () => {
+    const r = parseOutline(
+      '{"chapters":[{"title":"第一章 血溅寒炉","goal":"g"},{"title":"第十二回·光明顶","goal":"g2"}]}',
+    );
+    expect(r!.outline.chapters[0]!.title).toBe("血溅寒炉");
+    expect(r!.outline.chapters[1]!.title).toBe("光明顶");
+  });
 });
 
 describe("parseWorldBible", () => {
@@ -56,5 +70,82 @@ describe("parseWorldBible", () => {
     const wb = parseWorldBible("乱码");
     expect(wb.era).toBe("");
     expect(wb.factions).toEqual([]);
+  });
+});
+
+describe("parseTargetChapters", () => {
+  test("取提示里最大整数并钳制到 [3,2000]", () => {
+    expect(parseTargetChapters("10 章（请严格规划为 10 章）")).toBe(10);
+    expect(parseTargetChapters("6 到 10 章")).toBe(10);
+    expect(parseTargetChapters("1 章")).toBe(3);
+    expect(parseTargetChapters(undefined)).toBe(10);
+    expect(parseTargetChapters("随便")).toBe(10);
+  });
+  test("支持长篇：数百章不再被截到 60", () => {
+    expect(parseTargetChapters("500 章")).toBe(500);
+    expect(parseTargetChapters("500 章（请严格规划为 500 章）")).toBe(500);
+    expect(parseTargetChapters("100 章")).toBe(100);
+    expect(parseTargetChapters("99999 章")).toBe(2000);
+  });
+});
+
+describe("parseSkeleton", () => {
+  test("解析书本级 canon 与幕列表", () => {
+    const s = parseSkeleton(
+      JSON.stringify({
+        title: "旧盟刀",
+        premise: "p",
+        logline: "l",
+        throughline: "t",
+        ending: "e",
+        worldBible: { era: "元末", factions: ["六扇门"] },
+        acts: [
+          { title: "少室风云", summary: "开篇引出九阳", chapters: 3 },
+          { title: "光明顶", summary: "力挽狂澜", chapters: 4 },
+        ],
+      }),
+    );
+    expect(s).not.toBeNull();
+    expect(s!.title).toBe("旧盟刀");
+    expect(s!.worldBible.factions).toContain("六扇门");
+    expect(s!.acts).toHaveLength(2);
+    expect(s!.acts[1]!.chapters).toBe(4);
+  });
+
+  test("无 acts 返回 null（交上层回退单次生成）", () => {
+    expect(parseSkeleton('{"title":"x","acts":[]}')).toBeNull();
+    expect(parseSkeleton("不是 JSON")).toBeNull();
+  });
+
+  test("幕缺 chapters 时记为 0（留给 normalize 补齐）", () => {
+    const s = parseSkeleton('{"acts":[{"title":"一","summary":"起"}]}');
+    expect(s!.acts[0]!.chapters).toBe(0);
+  });
+});
+
+describe("normalizeActCounts", () => {
+  const act = (title: string, chapters: number) => ({ title, summary: title, chapters });
+
+  test("按比例缩放使总和恰为目标", () => {
+    const out = normalizeActCounts([act("a", 2), act("b", 2), act("c", 2)], 12);
+    expect(out.reduce((s, a) => s + a.chapters, 0)).toBe(12);
+  });
+
+  test("处理舍入漂移仍精确命中目标", () => {
+    const out = normalizeActCounts([act("a", 1), act("b", 1), act("c", 1)], 10);
+    expect(out.reduce((s, a) => s + a.chapters, 0)).toBe(10);
+    expect(out.every((a) => a.chapters >= 1)).toBe(true);
+  });
+
+  test("全部缺章数时平均分配且命中目标", () => {
+    const out = normalizeActCounts([act("a", 0), act("b", 0)], 9);
+    expect(out.reduce((s, a) => s + a.chapters, 0)).toBe(9);
+    expect(out.every((a) => a.chapters >= 1)).toBe(true);
+  });
+
+  test("每幕至少 1 章", () => {
+    const out = normalizeActCounts([act("a", 100), act("b", 1)], 5);
+    expect(out.every((a) => a.chapters >= 1)).toBe(true);
+    expect(out.reduce((s, a) => s + a.chapters, 0)).toBe(5);
   });
 });

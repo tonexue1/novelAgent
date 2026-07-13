@@ -4,6 +4,8 @@ import type {
   CodexCharacter,
   StoryMemory,
   ThreadItem,
+  PropItem,
+  StoryEvent,
   ChapterPlan,
 } from "./types.ts";
 
@@ -16,6 +18,8 @@ import type {
 export const RELEVANT_CAP = 6;
 /** "近期活跃"的章数窗口。 */
 export const RECENT_WINDOW = 2;
+/** 世界圣经每类设定的容量上限，防止长篇里无限膨胀成噪声。 */
+export const WORLD_LIST_CAP = 40;
 
 export function emptyWorldBible(): WorldBible {
   return {
@@ -35,28 +39,84 @@ export function emptyMemory(worldBible: WorldBible): StoryMemory {
     characters: [],
     events: [],
     threads: [],
+    props: [],
+    currentLocation: "",
     rollingSummary: "",
+    arcSummaries: [],
   };
 }
 
+/** 兜底旧存档：补齐后新增的字段（props/currentLocation/appearances/arcSummaries），避免读旧 memory.json 崩。 */
+export function normalizeMemory(m: StoryMemory): StoryMemory {
+  return {
+    ...m,
+    props: m.props ?? [],
+    currentLocation: m.currentLocation ?? "",
+    characters: (m.characters ?? []).map((c) => ({ ...c, appearances: c.appearances ?? 1 })),
+    events: m.events ?? [],
+    threads: m.threads ?? [],
+    arcSummaries: m.arcSummaries ?? [],
+  };
+}
+
+export function isDead(status: string): boolean {
+  return /(亡|死|殒|殁|身故|阵亡|遇害|丧命)/.test(status);
+}
+
+/** 一个人物的所有称呼集合（正名 + 别名），用于跨章归并同一人。 */
+function aliasSet(c: Pick<CodexCharacter, "name" | "aliases">): Set<string> {
+  return new Set([c.name, ...(c.aliases ?? [])].map((s) => s.trim()).filter(Boolean));
+}
+
+/** 两个档案是否指同一人：正名相同，或称呼集合有交集。 */
+function sameCharacter(
+  a: Pick<CodexCharacter, "name" | "aliases">,
+  b: Pick<CodexCharacter, "name" | "aliases">,
+): boolean {
+  if (a.name === b.name) return true;
+  const sa = aliasSet(a);
+  for (const x of aliasSet(b)) if (sa.has(x)) return true;
+  return false;
+}
+
+function mergeAliases(prev: CodexCharacter, incoming: CodexCharacter): string[] | undefined {
+  const set = aliasSet(prev);
+  for (const x of aliasSet(incoming)) set.add(x);
+  set.delete(prev.name); // 正名不放进 aliases
+  const list = [...set];
+  return list.length ? list : undefined;
+}
+
 /**
- * upsert 一个人物档案：按 name 匹配。
+ * upsert 一个人物档案：按【正名或别名交集】匹配同一人（"封沉岳/左腿瘸人/师叔"归一）。
  * - 新角色：整份写入。
  * - 旧角色：【不可变内核】personality / style / identity / secret / firstChapter / voiceSample
- *   一经确立不被覆盖；只更新会演变的字段（status / currentGoal / relationships /
- *   arcNotes / aliases / appearance / secretRevealed / lastChapter）。
+ *   一经确立不被覆盖；只更新会演变的字段。别名并集累积。
+ * - 【死亡不可逆】：已判定死亡的人物，状态不再被改回"在世"（防复活 bug）；
+ *   如确需复活，incoming.status 里显式含"复活/诈死/假死"才允许。
  * 返回新的 characters 数组（不原地修改入参）。
  */
 export function upsertCharacter(
   characters: CodexCharacter[],
   incoming: CodexCharacter,
 ): CodexCharacter[] {
-  const idx = characters.findIndex((c) => c.name === incoming.name);
+  const idx = characters.findIndex((c) => sameCharacter(c, incoming));
   if (idx === -1) return [...characters, incoming];
 
   const prev = characters[idx]!;
+
+  // 死亡不可逆：旧档已死且新状态想改回"活"，除非显式复活，否则保留死亡状态。
+  const wantsResurrect = /(复活|诈死|假死|死而复生)/.test(incoming.status);
+  const nextStatus =
+    isDead(prev.status) && !isDead(incoming.status) && !wantsResurrect
+      ? prev.status
+      : incoming.status || prev.status;
+
   const merged: CodexCharacter = {
     ...prev,
+    // 正名以先确立者为准；别名并集累积（把新出现的称呼收进来）。
+    name: prev.name,
+    aliases: mergeAliases(prev, incoming),
     // 内核字段：保留旧值，仅在旧值为空时用新值补齐。
     personality: prev.personality || incoming.personality,
     style: prev.style || incoming.style,
@@ -68,26 +128,40 @@ export function upsertCharacter(
     // 演变字段：新值优先（有则更新）。
     currentGoal: incoming.currentGoal ?? prev.currentGoal,
     relationships: incoming.relationships ?? prev.relationships,
-    aliases: incoming.aliases ?? prev.aliases,
     appearance: incoming.appearance ?? prev.appearance,
     arcNotes: incoming.arcNotes ?? prev.arcNotes,
     secretRevealed: incoming.secretRevealed ?? prev.secretRevealed,
-    status: incoming.status || prev.status,
+    status: nextStatus,
     lastChapter: Math.max(prev.lastChapter, incoming.lastChapter),
+    appearances: incoming.appearances ?? prev.appearances,
   };
   const next = [...characters];
   next[idx] = merged;
   return next;
 }
 
-/** 合并伏笔线程：按 id upsert，已有则更新描述/状态。 */
+/** 归一化文本用于近义去重：去标点/空白、转小写。 */
+function normKey(s: string): string {
+  return s
+    .toLowerCase()
+    .replace(/[\s，。、；：:,.!！?？"'“”‘’（）()【】\[\]—\-~～]/g, "")
+    .trim();
+}
+
+/**
+ * 合并伏笔线程：按 id 或【归一化描述】匹配同一伏笔（避免"藏宝图下落"与"藏宝图的下落"重复）。
+ * 已有则更新描述/状态；无则追加。
+ */
 export function mergeThreads(
   threads: ThreadItem[],
   incoming: ThreadItem[],
 ): ThreadItem[] {
   let result = [...threads];
   for (const t of incoming) {
-    const idx = result.findIndex((x) => x.id === t.id);
+    const tKey = normKey(t.description);
+    const idx = result.findIndex(
+      (x) => x.id === t.id || (tKey.length > 0 && normKey(x.description) === tKey),
+    );
     if (idx === -1) {
       result = [...result, t];
     } else {
@@ -106,6 +180,47 @@ export function mergeThreads(
   return result;
 }
 
+/**
+ * 道具账本对账：按名字归并，每件道具【唯一当前持有者/位置】。
+ * incoming 覆盖同名道具的持有权/位置/状态，而不是新增一个藏处（治"到处都藏着真本"）。
+ */
+export function reconcileProps(props: PropItem[], incoming: PropItem[]): PropItem[] {
+  let result = [...props];
+  for (const p of incoming) {
+    if (!p.name.trim()) continue;
+    const key = normKey(p.name);
+    const idx = result.findIndex((x) => normKey(x.name) === key);
+    if (idx === -1) {
+      result = [...result, p];
+    } else {
+      const prev = result[idx]!;
+      result[idx] = {
+        name: prev.name,
+        holder: p.holder || prev.holder,
+        location: p.location || prev.location,
+        status: p.status || prev.status,
+        lastChapter: Math.max(prev.lastChapter, p.lastChapter),
+      };
+    }
+  }
+  return result;
+}
+
+/**
+ * 并集去重 + 近义合并 + 容量封顶：世界圣经各类设定只增会膨胀成噪声，这里
+ * 用归一化 key 去掉重复/近义，并保留最新的 cap 条。
+ */
+export function mergeCapped(base: string[], add: string[], cap = WORLD_LIST_CAP): string[] {
+  const seen = new Map<string, string>(); // normKey -> 原文（后到覆盖，保留较新表述）
+  for (const s of [...base, ...add]) {
+    const v = s.trim();
+    if (!v) continue;
+    seen.set(normKey(v), v);
+  }
+  const list = [...seen.values()];
+  return list.length > cap ? list.slice(list.length - cap) : list;
+}
+
 /** 把人物档案还原成 drama 层 Character，让 CharacterActor 原样重建。 */
 export function codexToCharacter(c: CodexCharacter): Character {
   return {
@@ -118,22 +233,41 @@ export function codexToCharacter(c: CodexCharacter): Character {
   };
 }
 
-function isDead(status: string): boolean {
-  return /(亡|死|殒|殁|身故|阵亡)/.test(status);
+/** 本章目标/节拍里是否点到了该人物（含其所有别名与去称号本名）。 */
+function mentionedIn(c: Pick<CodexCharacter, "name" | "aliases">, plan: ChapterPlan): boolean {
+  const hay = `${plan.goal} ${(plan.keyBeats ?? []).join(" ")}`;
+  for (const alias of aliasSet(c)) {
+    if (hay.includes(alias)) return true;
+    // 也匹配去掉称号后的本名末段，如"独臂刀客 沈孤鸿" → "沈孤鸿"。
+    const parts = alias.split(/\s+/);
+    const core = parts[parts.length - 1];
+    if (core && core.length >= 2 && hay.includes(core)) return true;
+  }
+  return false;
 }
 
-function mentionedIn(name: string, plan: ChapterPlan): boolean {
-  const hay = `${plan.goal} ${(plan.keyBeats ?? []).join(" ")}`;
-  if (hay.includes(name)) return true;
-  // 也匹配名字里的"本名"末段（去掉称号），如"独臂刀客 沈孤鸿" → "沈孤鸿"。
-  const parts = name.split(/\s+/);
-  const core = parts[parts.length - 1];
-  return !!core && core.length >= 2 && hay.includes(core);
+/**
+ * 识别主角：登场章数最多者（并列取最早登场）。需 appearances ≥ 2 才算"主角"，
+ * 避免开局只有第 1 章数据时把随便一人当主角（也保证单测无 appearances 时不误判）。
+ */
+export function protagonistOf(memory: StoryMemory): CodexCharacter | undefined {
+  let best: CodexCharacter | undefined;
+  for (const c of memory.characters) {
+    const a = c.appearances ?? 0;
+    if (a < 2) continue;
+    if (!best) {
+      best = c;
+      continue;
+    }
+    const ba = best.appearances ?? 0;
+    if (a > ba || (a === ba && c.firstChapter < best.firstChapter)) best = c;
+  }
+  return best;
 }
 
 /**
  * 有界选取本章相关人物 + 生成回归者补账提示。
- * 优先级：本章目标点名者 > 近期活跃者 > 其余在世者；去重后封顶 {@link RELEVANT_CAP}。
+ * 优先级：主角（若在世且已确立）> 本章目标点名者 > 近期活跃者 > 其余在世者；去重后封顶。
  * returningNotes：入选者若已缺席 ≥1 整章（lastChapter ≤ chapterNo-2）则提示补账。
  */
 export function selectRelevantCharacters(
@@ -141,17 +275,32 @@ export function selectRelevantCharacters(
   plan: ChapterPlan,
   chapterNo: number,
   cap = RELEVANT_CAP,
+  protagonistName?: string,
 ): { characters: CodexCharacter[]; returningNotes?: string } {
   const all = memory.characters;
-  const mentioned = all.filter((c) => mentionedIn(c.name, plan));
+  const isProtagonist = (c: CodexCharacter) =>
+    !!protagonistName && c.name === protagonistName && !isDead(c.status);
+
+  const protagonist = all.filter(isProtagonist);
+  // 被本章目标点名者可入选（含已故者：用于回忆/提及场景）。
+  const mentioned = all.filter((c) => !isProtagonist(c) && mentionedIn(c, plan));
+  // 近期活跃者：排除已故者，避免把刚死的人当活人重新搬上场。
   const recent = all.filter(
-    (c) => !mentioned.includes(c) && chapterNo - c.lastChapter <= RECENT_WINDOW,
+    (c) =>
+      !isProtagonist(c) &&
+      !mentioned.includes(c) &&
+      !isDead(c.status) &&
+      chapterNo - c.lastChapter <= RECENT_WINDOW,
   );
   const rest = all.filter(
-    (c) => !mentioned.includes(c) && !recent.includes(c) && !isDead(c.status),
+    (c) =>
+      !isProtagonist(c) &&
+      !mentioned.includes(c) &&
+      !recent.includes(c) &&
+      !isDead(c.status),
   );
 
-  const ordered = [...mentioned, ...recent, ...rest];
+  const ordered = [...protagonist, ...mentioned, ...recent, ...rest];
   const chosen = ordered.slice(0, cap);
 
   const notes: string[] = [];
@@ -207,8 +356,60 @@ export function renderOpenThreads(threads: ThreadItem[]): string {
   return open.map((t) => `- ${t.description}`).join("\n");
 }
 
+/** 渲染"已故人物名单"，作为铁律喂给导演/执笔人：这些人不得以在世身份出现。 */
+export function renderDeadRoster(characters: CodexCharacter[]): string {
+  const dead = characters.filter((c) => isDead(c.status));
+  if (!dead.length) return "";
+  return dead
+    .map((c) => `- ${c.name}（${c.status}${c.lastChapter ? `，第${c.lastChapter}章` : ""}）`)
+    .join("\n");
+}
+
+/** 渲染道具账本：每件道具当前在谁手里/在哪，供导演/执笔人对账，勿另编藏处。 */
+export function renderPropLedger(props: PropItem[]): string {
+  if (!props?.length) return "";
+  return props
+    .map((p) => `- ${p.name}：现由「${p.holder || "无人"}」持有，位于「${p.location || "不明"}」（${p.status || "完好"}）`)
+    .join("\n");
+}
+
+/** 渲染最近若干条大事记，作为"已发生、勿重复"的对账清单。 */
+export function renderEventsRecap(events: StoryEvent[], limit = 10): string {
+  if (!events?.length) return "";
+  return events
+    .slice(-limit)
+    .map((e) => `- 第${e.chapter}章：${e.summary}`)
+    .join("\n");
+}
+
 /** 取一段文本的结尾片段，用于章节承接。 */
 export function tailOf(text: string, chars = 400): string {
   const t = text.trim();
   return t.length <= chars ? t : t.slice(-chars);
+}
+
+/**
+ * 生成一卷的综述（纯函数，无 LLM）：取该卷章号区间内的大事记，压成一条卷综述。
+ * 分卷滚动模式下每卷收尾归档一条，供规划下一卷时承接长期主干。
+ */
+export function buildArcRecap(
+  events: StoryEvent[],
+  arcNo: number,
+  arcTitle: string,
+  chapterStart: number,
+  chapterEnd: number,
+): string {
+  const inArc = (events ?? []).filter(
+    (e) => e.chapter >= chapterStart && e.chapter <= chapterEnd,
+  );
+  const body = inArc.length
+    ? inArc.map((e) => e.summary).join("；")
+    : "（本卷无大事记）";
+  return `第${arcNo}卷《${arcTitle}》（第${chapterStart}-${chapterEnd}章）：${body}`;
+}
+
+/** 渲染各卷综述（有界，取最近若干卷），供规划下一卷时了解长期前情。 */
+export function renderArcSummaries(summaries: string[] | undefined, limit = 8): string {
+  if (!summaries?.length) return "";
+  return summaries.slice(-limit).map((s) => `- ${s}`).join("\n");
 }
