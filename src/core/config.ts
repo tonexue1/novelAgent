@@ -10,6 +10,26 @@ export interface LLMConfig {
 }
 
 /**
+ * 可按角色分别指定模型的 agent 角色。演戏用擅长角色扮演的模型、成书/谋篇用文笔与
+ * 逻辑更强的模型，各取所长。通过环境变量 `OPENAI_MODEL_<ROLE>` 覆盖，缺省回落到
+ * `OPENAI_MODEL`。例如 OPENAI_MODEL_CHARACTER=MiniMax-M2-her、OPENAI_MODEL_NOVELIST=MiniMax-M3。
+ */
+export const AGENT_ROLES = [
+  "director",
+  "character",
+  "novelist",
+  "planner",
+  "archivist",
+] as const;
+export type AgentRole = (typeof AGENT_ROLES)[number];
+
+/** 解析某角色应使用的模型：OPENAI_MODEL_<ROLE> 优先，否则回落到 fallback（通常是 OPENAI_MODEL）。 */
+export function modelForRole(role: AgentRole, fallback: string): string {
+  const override = process.env[`OPENAI_MODEL_${role.toUpperCase()}`]?.trim();
+  return override || fallback;
+}
+
+/**
  * 读取并校验 LLM 配置。缺失关键项时抛出带指引的错误，
  * 便于第一次运行的人知道该配置什么。
  */

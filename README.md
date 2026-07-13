@@ -86,6 +86,16 @@ OPENAI_API_KEY=sk-xxxx
 OPENAI_MODEL=deepseek-chat
 ```
 
+> 提示：带 thinking 的推理模型会把思维链 `<think>…</think>` 内联进正文，客户端已统一剥离，不会污染台词或破坏 JSON 解析。
+
+**按角色分模型（可选）**：演戏与成书要的能力不同——角色即兴要"活"，成书/谋篇要"稳"。可用 `OPENAI_MODEL_<ROLE>` 分别指定，缺省回落到 `OPENAI_MODEL`。ROLE 取 `CHARACTER`（角色扮演）、`DIRECTOR`（导演造人/调度）、`NOVELIST`（执笔成书）、`PLANNER`（规划大纲）、`ARCHIVIST`（档案官抽记忆）。例如接 MiniMax：
+
+```
+OPENAI_MODEL=MiniMax-M2.5
+OPENAI_MODEL_CHARACTER=MiniMax-M2-her   # 角色扮演模型，演戏更活
+OPENAI_MODEL_NOVELIST=MiniMax-M3        # 成书最看重文笔与长文连贯
+```
+
 3. 运行：
 
 ```bash

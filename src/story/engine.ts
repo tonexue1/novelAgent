@@ -68,8 +68,9 @@ export class NovelEngine {
 
   constructor(opts: NovelEngineOptions = {}) {
     this.client = opts.client ?? new LLMClient();
-    this.planner = new Planner(this.client);
-    this.archivist = new Archivist(this.client);
+    // 按角色分模型（未配置则回落到 OPENAI_MODEL）；drama 内部再拆 director/character/novelist。
+    this.planner = new Planner(this.client.withRole("planner"));
+    this.archivist = new Archivist(this.client.withRole("archivist"));
     this.drama = new WuxiaDramaAgent({
       client: this.client,
       onEvent: opts.onEvent,

@@ -51,15 +51,17 @@ const DEFAULT_SEED = "暴雨夜，一个蒙面人踹开了荒野客栈的门。"
 export class WuxiaDramaAgent implements Agent {
   private readonly director: Director;
   private readonly novelist: Novelist;
-  private readonly client: LLMClient;
+  /** 角色扮演专用客户端（可用 OPENAI_MODEL_CHARACTER 指定更擅长演戏的模型）。 */
+  private readonly characterClient: LLMClient;
   private readonly maxBeats: number;
   private readonly novelize: boolean;
   private readonly onEvent?: DramaEventSink;
 
   constructor(opts: WuxiaDramaOptions) {
-    this.client = opts.client;
-    this.director = new Director(opts.client);
-    this.novelist = new Novelist(opts.client);
+    // 按角色分模型：导演/角色/执笔人各取所长（未配置则回落到 OPENAI_MODEL）。
+    this.director = new Director(opts.client.withRole("director"));
+    this.novelist = new Novelist(opts.client.withRole("novelist"));
+    this.characterClient = opts.client.withRole("character");
     this.maxBeats = opts.maxBeats ?? 14;
     this.novelize = opts.novelize ?? true;
     this.onEvent = opts.onEvent;
@@ -103,7 +105,7 @@ export class WuxiaDramaAgent implements Agent {
     });
 
     const actors = new Map<string, CharacterActor>(
-      scene.characters.map((c) => [c.name, new CharacterActor(this.client, c)]),
+      scene.characters.map((c) => [c.name, new CharacterActor(this.characterClient, c)]),
     );
     const names = castNames(scene);
     const transcript: Beat[] = [];

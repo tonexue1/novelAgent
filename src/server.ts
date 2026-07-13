@@ -76,27 +76,50 @@ async function serveStatic(pathname: string): Promise<Response> {
  */
 function sseResponse(run: (send: (e: DramaEvent) => void) => Promise<void>): Response {
   const encoder = new TextEncoder();
+  let closed = false;
+  let heartbeat: ReturnType<typeof setInterval> | undefined;
+  const cleanup = () => {
+    closed = true;
+    if (heartbeat) {
+      clearInterval(heartbeat);
+      heartbeat = undefined;
+    }
+  };
+
   const stream = new ReadableStream<Uint8Array>({
     async start(controller) {
-      let closed = false;
-      const send = (event: DramaEvent) => {
+      // 客户端可能中途断开（刷新/关页），此时底层 controller 已关闭。入队一律做
+      // 防御：closed 后不发，入队抛错（controller 已关）则视为断连并清理，绝不让
+      // 未捕获异常冒泡到进程顶层把整个服务打挂。
+      const safeEnqueue = (chunk: Uint8Array) => {
         if (closed) return;
-        controller.enqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
+        try {
+          controller.enqueue(chunk);
+        } catch {
+          cleanup();
+        }
       };
+      const send = (event: DramaEvent) =>
+        safeEnqueue(encoder.encode(`data: ${JSON.stringify(event)}\n\n`));
       // 心跳：一拍戏可能要等好几秒的 LLM 调用，期间连接会"空闲"。定时发一条
       // SSE 注释行，既重置底层 socket 的 idle 计时，又能穿过中间代理不被掐断。
-      const heartbeat = setInterval(() => {
-        if (!closed) controller.enqueue(encoder.encode(`: keepalive\n\n`));
-      }, 5000);
+      heartbeat = setInterval(() => safeEnqueue(encoder.encode(`: keepalive\n\n`)), 5000);
       try {
         await run(send);
       } catch (err) {
         send({ type: "error", message: err instanceof Error ? err.message : String(err) });
       } finally {
-        closed = true;
-        clearInterval(heartbeat);
-        controller.close();
+        cleanup();
+        try {
+          controller.close();
+        } catch {
+          // 已被客户端取消而关闭，忽略。
+        }
       }
+    },
+    // 客户端断开时 Bun 调用此回调：停掉心跳，让 run 里的后续 send 变成 no-op。
+    cancel() {
+      cleanup();
     },
   });
 
