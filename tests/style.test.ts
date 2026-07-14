@@ -7,6 +7,7 @@ import {
   resolveIntensity,
   renderStyleCard,
   renderStyleBrief,
+  renderDirectorCard,
 } from "../src/story/style.ts";
 
 describe("loadStyleCards（从 styles/ 目录读盘）", () => {
@@ -119,5 +120,43 @@ describe("renderStyleBrief", () => {
     const full = renderStyleCard(card, "medium");
     expect(brief).toContain("金庸式醇厚");
     expect(brief.length).toBeLessThan(full.length);
+  });
+});
+
+describe("风味卡 direction 段（供导演读）", () => {
+  test("三张预设卡都带 direction.scene 与 direction.opening", () => {
+    for (const id of ["chendong", "gulong", "jinyong"]) {
+      const card = resolveStyleCard(id)!;
+      expect(card.direction).toBeDefined();
+      expect(card.direction!.scene).toBeTruthy();
+      expect(card.direction!.opening).toBeTruthy();
+    }
+  });
+
+  test("自定义卡不含 direction", () => {
+    expect(resolveStyleCard("冷峻黑色幽默")?.direction).toBeUndefined();
+  });
+});
+
+describe("renderDirectorCard", () => {
+  test("无卡/无 direction 返回空串", () => {
+    expect(renderDirectorCard(undefined, 1)).toBe("");
+    expect(renderDirectorCard(resolveStyleCard("冷峻黑色幽默"), 1)).toBe("");
+  });
+
+  test("scene 恒常注入（任意章）", () => {
+    const card = resolveStyleCard("chendong")!;
+    const ch5 = renderDirectorCard(card, 5);
+    expect(ch5).toContain("辰东式史诗");
+    expect(ch5).toContain("场面调度");
+    // 非第 1 章不注入开篇起势。
+    expect(ch5).not.toContain("开篇起势");
+  });
+
+  test("opening 仅第 1 章注入", () => {
+    const card = resolveStyleCard("chendong")!;
+    const ch1 = renderDirectorCard(card, 1);
+    expect(ch1).toContain("开篇起势");
+    expect(ch1.length).toBeGreaterThan(renderDirectorCard(card, 2).length);
   });
 });

@@ -13,5 +13,11 @@ novel_*.md
 # 多章小说生成的项目产物
 novels/
 
+# 评测运行产物（LLM 评 LLM 的打分报告，可重跑，不入库；fixtures 入库）
+eval-runs/
+
 # 参考素材（原著文本等，版权+体积，不入库）
 out/
+
+# 提示词追踪产物（LLM_TRACE 调试落盘，可重跑，不入库）
+debug/

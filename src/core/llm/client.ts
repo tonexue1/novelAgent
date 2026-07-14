@@ -6,6 +6,7 @@ import {
   type AgentRole,
 } from "../config.ts";
 import type { ChatRequest, ChatResult, Message } from "./types.ts";
+import { tracePrompt, traceResponse } from "./trace.ts";
 
 /**
  * OpenAI 兼容的 chat.completions 客户端。
@@ -35,6 +36,19 @@ export class LLMClient {
     return new LLMClient({ ...this.config, model: roleModel, thinking: roleThinking }, role);
   }
 
+  /** 当前调用标签（角色名），用于追踪/日志归因。 */
+  get callLabel(): string {
+    return this.label;
+  }
+
+  /**
+   * 派生一个只换【调用标签】的客户端（模型/配置全部不变），用于日志计时与
+   * 提示词追踪的来源归因。例如给每个角色单独打上人物名，逐拍可分辨。
+   */
+  withLabel(label: string): LLMClient {
+    return new LLMClient(this.config, label);
+  }
+
   /**
    * 发起一次对话补全请求，返回归一化后的 assistant 消息。
    * 遇到瞬时错误（上游 529 过载、5xx 抖动、限流、网络中断）会自动退避重试，
@@ -60,11 +74,16 @@ export class LLMClient {
       0,
     );
 
+    // 提示词追踪（LLM_TRACE 开启才落盘）：只记一次逻辑调用，不随重试重复；成功后回填回复。
+    const traceId = tracePrompt(this.label, this.config.model, req.messages, req.temperature ?? 0);
+
     const maxAttempts = this.config.maxRetries + 1;
     let lastErr: Error | undefined;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
-        return await this.attemptChat(body, promptChars);
+        const result = await this.attemptChat(body, promptChars);
+        traceResponse(traceId, result.message.content, result.finishReason);
+        return result;
       } catch (err) {
         const transient = err instanceof TransientError;
         if (!transient || attempt >= maxAttempts) {

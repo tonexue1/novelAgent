@@ -77,6 +77,12 @@ export interface DramaContext {
   narrationStyle?: string;
   /** 写作风味的精简版（一句话，弱注入导演旁白/开场）。可空。 */
   narrationStyleBrief?: string;
+  /**
+   * 导演运镜风味（渲染好的文本，注入导演开场/运镜）。承载「作者怎么搭场面/起势」——
+   * 场面尺度、扎根世界的标志元素、群像镜头、第 1 章开篇框架。与 narrationStyle（执笔层）
+   * 出自同一张风味卡的不同段落。可空（回落导演通用底线）。
+   */
+  directionStyle?: string;
 }
 
 /** 渲染出场人物名单（喂给导演/角色的公开信息）。 */
@@ -116,44 +122,3 @@ export function renderTranscript(beats: Beat[], limit = 12): string {
 export function castNames(scene: Scene): string[] {
   return scene.characters.map((c) => c.name);
 }
-
-/**
- * 兜底开局：当导演生成场景失败或用户未给开场时使用，保证 demo 永远能跑。
- * 一个经典客栈对峙场景。
- */
-export const DEFAULT_SCENE: Scene = {
-  background:
-    "暴雨夜，川北野岭上的『风雪客栈』。一张残破的藏宝图残卷流落江湖，传说指向前朝镖银。今夜，几路人马鬼使神差地聚在这间客栈里，谁都不肯先走。",
-  characters: [
-    {
-      name: "独臂刀客 沈孤鸿",
-      identity: "曾经的镖局总镖头，右臂在十年前的劫案中被斩断",
-      personality: "沉默寡言，眼神锐利，出手极快",
-      goal: "找出当年灭他满门的仇人",
-      secret: "他其实认得藏宝图上的暗记",
-      style: "惜字如金，多用短句，几乎不寒暄，一开口便冷硬如刀",
-    },
-    {
-      name: "俏判官 柳三娘",
-      identity: "行走江湖的女捕快，亦正亦邪",
-      personality: "泼辣精明，笑里藏刀",
-      goal: "拿到藏宝图向上头请功",
-      style: "泼辣爽利，爱用反问和俏皮话挤兑人，市井气重",
-    },
-    {
-      name: "醉丐 邋遢老儿",
-      identity: "看似乞丐，实为丐帮隐世长老",
-      personality: "嬉皮笑脸，深不可测",
-      goal: "搅局，看这群人自相残杀",
-      secret: "他才是藏宝图真正的主人",
-      style: "满口疯话胡话、颠三倒四，爱打岔说笑，话里藏话",
-    },
-    {
-      name: "白衣书生 温若寒",
-      identity: "进京赶考的书生，实则身负血海深仇",
-      personality: "文弱外表下藏着狠戾",
-      goal: "接近沈孤鸿，伺机复仇",
-      style: "文绉绉、彬彬有礼、爱引经据典，笑意底下藏针",
-    },
-  ],
-};

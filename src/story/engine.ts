@@ -2,7 +2,12 @@ import { LLMClient } from "../core/llm/client.ts";
 import type { DramaEventSink } from "../drama/events.ts";
 import type { DramaContext } from "../drama/scene.ts";
 import { WuxiaDramaAgent } from "../drama/agent.ts";
-import { Planner, parseTargetChapters, normalizeActCounts } from "./planner.ts";
+import {
+  Planner,
+  parseTargetChapters,
+  normalizeActCounts,
+  buildPlaceholderChapters,
+} from "./planner.ts";
 import type { Skeleton } from "./planner.ts";
 import { Archivist } from "./archivist.ts";
 import {
@@ -26,6 +31,7 @@ import {
   saveMeta,
   saveOutline,
   saveMemory,
+  saveMemorySnapshot,
   saveChapter,
   loadChapterProse,
   makeSlug,
@@ -48,6 +54,7 @@ import {
   resolveIntensity,
   renderStyleCard,
   renderStyleBrief,
+  renderDirectorCard,
   DEFAULT_STYLE_INTENSITY,
 } from "./style.ts";
 
@@ -170,7 +177,12 @@ export class NovelEngine {
     return { meta, outline, memory };
   }
 
-  /** 分卷滚动新建：先出书本级 canon + 分卷路线图，只展开第 1 卷的分章。 */
+  /**
+   * 分卷滚动新建：先出书本级 canon + 分卷路线图，只展开第 1 卷的分章。
+   * 规划部分复用 {@link Planner.createRollingOutline}；本方法只负责落盘与广播事件。
+   * 若路线图生成失败，createRollingOutline 会回退到整书规划（返回非 rolling 大纲），
+   * 这里据 outline.mode 兼容处理：rolling 才广播卷开始事件。
+   */
   private async startRollingNovel(
     seed: string,
     target: number,
@@ -178,53 +190,15 @@ export class NovelEngine {
     styleCard: StyleCard | undefined,
     styleIntensity: StyleIntensity,
   ): Promise<NovelProject> {
-    const roadmap = await this.planner.planRoadmap(seed, target, genre);
-    if (!roadmap || roadmap.acts.length === 0) {
-      console.error("\x1b[31m[规划] 分卷路线图生成失败，回退到单次整体规划（截到 40 章）。\x1b[0m");
-      return this.startNovel(
-        seed,
-        `${Math.min(target, ROLLING_THRESHOLD)} 章`,
-        genre.id,
-        styleCard?.label,
-        styleIntensity,
-      );
-    }
-
-    const acts = normalizeActCounts(roadmap.acts, target);
-    const skeleton: Skeleton = { ...roadmap, acts };
-    console.log(
-      `\x1b[36m[规划] 路线图已成《${skeleton.title}》：${acts.length} 卷、共 ${target} 章，展开第 1 卷…\x1b[0m`,
+    const { title, outline, worldBible } = await this.planner.createRollingOutline(
+      seed,
+      `${target} 章`,
+      genre,
     );
-
-    const firstArc = await this.planner.expandAct(skeleton, acts, 0, [], genre);
-    const chapters: ChapterPlan[] =
-      firstArc.length > 0
-        ? firstArc.map((c, i) => ({ ...c, n: i + 1, status: "planned" as const, arc: 1 }))
-        : [{ n: 1, title: acts[0]!.title, goal: acts[0]!.summary, status: "planned", arc: 1 }];
-
-    const arcs: ArcPlan[] = acts.map((a, i) => ({
-      n: i + 1,
-      title: a.title,
-      summary: a.summary,
-      chapters: a.chapters,
-      status: i === 0 ? "active" : "planned",
-    }));
-
-    const outline: Outline = {
-      premise: skeleton.premise || seed,
-      logline: skeleton.logline,
-      throughline: skeleton.throughline,
-      ending: skeleton.ending,
-      chapters,
-      mode: "rolling",
-      arcs,
-      currentArc: 1,
-      targetChapters: target,
-    };
-    const memory = emptyMemory(skeleton.worldBible);
+    const memory = emptyMemory(worldBible);
     const meta: NovelMeta = {
-      slug: makeSlug(skeleton.title),
-      title: skeleton.title,
+      slug: makeSlug(title),
+      title,
       createdAt: new Date().toISOString(),
       model: this.client.model,
       chaptersWritten: 0,
@@ -233,8 +207,11 @@ export class NovelEngine {
       styleIntensity,
     };
     createProject(meta, outline, memory);
-    this.emitOutline(outline, skeleton.title);
-    this.onEvent?.({ type: "arc-start", n: 1, title: arcs[0]!.title, summary: arcs[0]!.summary });
+    this.emitOutline(outline, title);
+    const firstArc = outline.arcs?.[0];
+    if (outline.mode === "rolling" && firstArc) {
+      this.onEvent?.({ type: "arc-start", n: 1, title: firstArc.title, summary: firstArc.summary });
+    }
     return { meta, outline, memory };
   }
 
@@ -269,6 +246,9 @@ export class NovelEngine {
     this.onEvent?.({ type: "chapter-start", n: plan.n, title: plan.title, goal: plan.goal });
     const chapterStartedAt = Date.now();
 
+    // 回退支持：先落一份"写本章之前"的记忆快照，rollback 时可精确还原到本章之前。
+    saveMemorySnapshot(slug, plan.n, memory);
+
     // 组装喂给 drama 的章节上下文（有界）：以主角为中心、带上世界状态铁律。
     const protagonist = protagonistOf(memory);
     const { characters, returningNotes } = selectRelevantCharacters(
@@ -296,6 +276,7 @@ export class NovelEngine {
       genreStyle: genre.styleGuidance,
       narrationStyle: renderStyleCard(styleCard, styleIntensity) || undefined,
       narrationStyleBrief: renderStyleBrief(styleCard) || undefined,
+      directionStyle: renderDirectorCard(styleCard, plan.n) || undefined,
     };
 
     // 1) 演一章（多 agent 涌现）。
@@ -407,22 +388,7 @@ export class NovelEngine {
     memory.arcSummaries = [...(memory.arcSummaries ?? []), recap];
     saveMemory(slug, memory);
 
-    // 2) 结合记忆展开下一卷。
-    this.onEvent?.({ type: "arc-start", n: nextArc.n, title: nextArc.title, summary: nextArc.summary });
-    console.log(
-      `\x1b[36m[规划] 第 ${cur} 卷已完，展开第 ${nextArc.n}/${arcs.length} 卷《${nextArc.title}》…\x1b[0m`,
-    );
-
-    const skeleton: Skeleton = {
-      title: meta.title,
-      premise: outline.premise,
-      logline: outline.logline,
-      throughline: outline.throughline,
-      ending: outline.ending,
-      worldBible: memory.worldBible,
-      acts: arcs.map((a) => ({ title: a.title, summary: a.summary, chapters: a.chapters })),
-    };
-    const prevTail = outline.chapters.slice(-2).map((c) => ({ ...c }));
+    // 2) 组装记忆摘要（供路线图修订 + 下一卷展开共用）。
     const protagonist = protagonistOf(memory);
     const memoryNote = [
       protagonist ? `主角：${protagonist.name}（${protagonist.identity}）` : "",
@@ -438,38 +404,126 @@ export class NovelEngine {
       .filter(Boolean)
       .join("\n");
 
+    // 2.5) showrunner 级自适应：展开前据实况修订【后续尚未展开的卷】路线图（每卷一次，失败即沿用原路线图）。
+    await this.reviseRemainingRoadmap(outline, memory, meta, genre, memoryNote);
+
+    // 修订可能重排了后续卷：重新读取（可能被修订过的）卷列表与下一卷。
+    const arcsNow = outline.arcs ?? [];
+    const nextArcNow = arcsNow.find((a) => a.n === cur + 1);
+    if (!nextArcNow) return false; // 修订后收敛为提前收官
+
+    // 3) 结合记忆展开下一卷。
+    this.onEvent?.({
+      type: "arc-start",
+      n: nextArcNow.n,
+      title: nextArcNow.title,
+      summary: nextArcNow.summary,
+    });
+    console.log(
+      `\x1b[36m[规划] 第 ${cur} 卷已完，展开第 ${nextArcNow.n}/${arcsNow.length} 卷《${nextArcNow.title}》…\x1b[0m`,
+    );
+
+    const skeleton: Skeleton = {
+      title: meta.title,
+      premise: outline.premise,
+      logline: outline.logline,
+      throughline: outline.throughline,
+      ending: outline.ending,
+      worldBible: memory.worldBible,
+      acts: arcsNow.map((a) => ({ title: a.title, summary: a.summary, chapters: a.chapters })),
+    };
+    const prevTail = outline.chapters.slice(-2).map((c) => ({ ...c }));
+
     let list = await this.planner.expandAct(
       skeleton,
       skeleton.acts,
-      nextArc.n - 1,
+      nextArcNow.n - 1,
       prevTail,
       genre,
       memoryNote,
     );
     if (list.length === 0) {
-      console.error(`\x1b[31m[规划] 第 ${nextArc.n} 卷展开失败，用占位章兜底。\x1b[0m`);
-      list = Array.from({ length: Math.max(1, nextArc.chapters) }, (_, i) => ({
-        n: i + 1,
-        title: `${nextArc.title}·${i + 1}`,
-        goal: nextArc.summary,
-        status: "planned" as const,
-      }));
+      console.error(`\x1b[31m[规划] 第 ${nextArcNow.n} 卷展开失败，用占位章兜底。\x1b[0m`);
+      list = buildPlaceholderChapters(
+        { title: nextArcNow.title, summary: nextArcNow.summary, chapters: nextArcNow.chapters },
+        Math.max(1, nextArcNow.chapters),
+      );
     }
 
-    // 3) 追加新章（续号、标记卷号），更新卷状态与当前卷。
+    // 4) 追加新章（续号、标记卷号），更新卷状态与当前卷。
     let n = outline.chapters.length;
     for (const c of list) {
       n++;
-      outline.chapters.push({ ...c, n, status: "planned", arc: nextArc.n });
+      outline.chapters.push({ ...c, n, status: "planned", arc: nextArcNow.n });
     }
-    for (const a of arcs) {
+    for (const a of arcsNow) {
       if (a.n === cur) a.status = "done";
-      else if (a.n === nextArc.n) a.status = "active";
+      else if (a.n === nextArcNow.n) a.status = "active";
     }
-    outline.currentArc = nextArc.n;
+    outline.currentArc = nextArcNow.n;
     saveOutline(slug, outline);
     this.emitOutline(outline, meta.title);
     return true;
+  }
+
+  /**
+   * showrunner 级自适应：据故事实况修订【后续尚未展开的卷】路线图（就地改写 outline.arcs / ending）。
+   * 每卷仅一次、有界、便宜；解析失败或异常一律沿用原路线图（best-effort，绝不因它中断写作）。
+   */
+  private async reviseRemainingRoadmap(
+    outline: Outline,
+    memory: StoryMemory,
+    meta: NovelMeta,
+    genre: GenreSpec,
+    memoryNote: string,
+  ): Promise<void> {
+    const arcs = outline.arcs ?? [];
+    const cur = outline.currentArc ?? 1;
+    const written = outline.chapters.length;
+    const target = outline.targetChapters ?? written;
+    const remaining = arcs.filter((a) => a.n > cur);
+    if (remaining.length === 0) return;
+
+    const toAct = (a: ArcPlan) => ({ title: a.title, summary: a.summary, chapters: a.chapters });
+    const remainingChapters = Math.max(remaining.length, target - written);
+
+    let revised: { ending: string; arcs: { title: string; summary: string; chapters: number }[] } | null;
+    try {
+      revised = await this.planner.reviseRoadmap({
+        title: meta.title,
+        throughline: outline.throughline,
+        ending: outline.ending,
+        worldBible: memory.worldBible,
+        doneArcs: arcs.filter((a) => a.n <= cur).map(toAct),
+        remainingArcs: remaining.map(toAct),
+        memoryNote,
+        remainingChapters,
+        genre,
+      });
+    } catch (err) {
+      console.error(
+        `\x1b[33m[规划] 路线图修订抛错，沿用原路线图：${err instanceof Error ? err.message : String(err)}\x1b[0m`,
+      );
+      return;
+    }
+    if (!revised || revised.arcs.length === 0) return;
+
+    // 卷数不能超过剩余章预算（否则每卷至少 1 章无法凑成总预算），超出则截断。
+    const capped = revised.arcs.slice(0, Math.max(1, remainingChapters));
+    const normalized = normalizeActCounts(capped, remainingChapters);
+    const kept = arcs.filter((a) => a.n <= cur);
+    const newRemaining: ArcPlan[] = normalized.map((a, i) => ({
+      n: cur + 1 + i,
+      title: a.title,
+      summary: a.summary,
+      chapters: a.chapters,
+      status: "planned" as const,
+    }));
+    outline.arcs = [...kept, ...newRemaining];
+    outline.ending = revised.ending || outline.ending;
+    console.log(
+      `\x1b[36m[规划] 路线图已据实况修订：后续 ${remaining.length} 卷 → ${newRemaining.length} 卷（剩余约 ${remainingChapters} 章）。\x1b[0m`,
+    );
   }
 }
 

@@ -129,12 +129,14 @@ export class Director {
       "- 【藏身份铁律】若某人物的真实身份是需要长期隐藏的秘密：给他一个自然可信、能在江湖上正常使用的化名或诨号；" +
         "这个化名【绝不可】包含或暗示其真实姓名、家族姓氏，也不得与其最终身份/名号同源（例如真名含某字，化名就不能用该字或其近义）；" +
         "真实身份只写进该人物的 secret 字段，绝不能出现在 name 或 identity 里。",
+      ...(ctx?.directionStyle ? ["", ctx.directionStyle] : []),
     ];
 
     const contextRules = ctx
       ? [
           "",
           "本章属于一部连载小说，务必与既有设定连贯（以下为铁律，违反即出戏）：",
+          "- 【扎根世界铁律】场景必须扎根【世界设定要点】里的标志性元素（时代/地域/势力/力量体系/信物/禁地等），一望即知是这个世界；不要写放之四海皆通用、任何背景都成立的普通宅院口角戏。",
           "- 场景与人物要扣住【本章目标】推进主线；不要重演【已发生·勿重复】里的情节。",
           "- 若【需复现的旧角色】里有人应在本章登场，必须【原样沿用】其姓名、身份、性格、说话风格与秘密，不得改写人设、不得改名或换人；可为其安排契合当前处境的新目标。",
           "- 【已故人物】名单里的人【绝不能以在世身份登场】（可作回忆/尸体/被提及，但不得说话行动）。",
@@ -237,25 +239,5 @@ export class Director {
       temperature: 0.8,
     });
     return parseDirectorDecision(message.content ?? "", castNames(scene));
-  }
-
-  /** 收场白。 */
-  async epilogue(scene: Scene, transcript: Beat[]): Promise<string> {
-    const system =
-      "你是说书人。为这一幕戏做一个简短有味道的收场白（2-4 句），点出这一幕的结局与余韵，像章回小说的结尾。只输出收场白本身。";
-    const user = [
-      `【背景】${scene.background}`,
-      `【全场经过】\n${renderTranscript(transcript, 100)}`,
-      "请写收场白。",
-    ].join("\n\n");
-
-    const { message } = await this.client.chat({
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.8,
-    });
-    return message.content?.trim() || "欲知后事如何，且听下回分解。";
   }
 }

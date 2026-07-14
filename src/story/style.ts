@@ -37,6 +37,9 @@ function normalizeCard(raw: unknown, fallbackId: string): StyleCard | null {
   const label = str(o.label);
   const tagline = str(o.tagline);
   if (!id || !label || !tagline) return null;
+  const dirRaw = o.direction && typeof o.direction === "object" ? (o.direction as Record<string, unknown>) : null;
+  const scene = dirRaw ? str(dirRaw.scene) : "";
+  const opening = dirRaw ? str(dirRaw.opening) : "";
   return {
     id,
     label,
@@ -47,6 +50,7 @@ function normalizeCard(raw: unknown, fallbackId: string): StyleCard | null {
     setpiece: str(o.setpiece),
     hook: str(o.hook),
     avoid: str(o.avoid),
+    ...(scene || opening ? { direction: { ...(scene ? { scene } : {}), ...(opening ? { opening } : {}) } } : {}),
   };
 }
 
@@ -179,4 +183,26 @@ export function renderStyleBrief(card: StyleCard | undefined): string {
   if (!card) return "";
   const bits = [card.tagline, card.rhythm].filter(Boolean).join(" ");
   return bits ? `叙述风味（${card.label}）：${bits}` : "";
+}
+
+/**
+ * 把风味卡的【导演段】渲染成注入【导演层（开场/运镜）】的提示词块。纯函数。
+ *
+ * 与 {@link renderStyleCard}（执笔层）对称，但吃的是 `card.direction`：
+ * - `scene`（场面调度）：恒常注入，指导每一幕如何搭建、扎根世界、拉开格局。
+ * - `opening`（开篇起势）：仅第 1 章（chapterNo === 1）注入。
+ *
+ * 卡未配 `direction`、或该场景无对应字段时返回空串（导演回落到通用底线，不受影响）。
+ */
+export function renderDirectorCard(card: StyleCard | undefined, chapterNo = 0): string {
+  const dir = card?.direction;
+  if (!dir) return "";
+  const lines = [
+    `【导演运镜风味：${card!.label}】`,
+    dir.scene ? `- 场面调度：${dir.scene}` : "",
+    chapterNo === 1 && dir.opening ? `- 开篇起势（仅本书第 1 章）：${dir.opening}` : "",
+    "- 边界：这是「怎么搭场面/起势」的运镜层，服务剧情张力与世界质感；不要为堆场面而空转，也不改变各人物固有的说话腔调。",
+  ].filter(Boolean);
+  // 只有边界一行（scene/opening 都为空）时视为无有效内容。
+  return lines.length > 2 ? lines.join("\n") : "";
 }
