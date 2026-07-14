@@ -1,5 +1,9 @@
 import { describe, expect, test } from "bun:test";
-import { parseMemoryUpdate } from "../src/story/archivist.ts";
+import { parseMemoryUpdate, Archivist } from "../src/story/archivist.ts";
+import type { ChapterRecord } from "../src/story/archivist.ts";
+import { emptyMemory } from "../src/story/memory.ts";
+import type { LLMClient } from "../src/core/llm/client.ts";
+import type { WorldBible } from "../src/story/types.ts";
 
 describe("parseMemoryUpdate", () => {
   test("解析完整更新", () => {
@@ -82,5 +86,56 @@ describe("parseMemoryUpdate", () => {
     const u = parseMemoryUpdate("{}");
     expect(u.props).toEqual([]);
     expect(u.currentLocation).toBe("");
+  });
+});
+
+describe("Archivist.updateMemory 韧性", () => {
+  const emptyWorldBible: WorldBible = {
+    era: "",
+    tone: "",
+    locations: [],
+    factions: [],
+    powerSystem: [],
+    items: [],
+    lore: [],
+  };
+
+  const chapter: ChapterRecord = {
+    chapterNo: 28,
+    goal: "教父火并对家",
+    scene: {
+      background: "码头仓库，深夜火并",
+      characters: [
+        {
+          name: "陈默",
+          identity: "退学少年出身的帮派头目",
+          personality: "冷静、护短",
+          goal: "拿下码头控制权",
+          style: "话少而狠",
+        },
+      ],
+    },
+    transcript: [{ actor: "陈默", kind: "act", content: "（压低声音）动手。" }],
+    prose: "枪声在仓库里炸开……",
+  };
+
+  test("LLM 抽取抛错时不崩溃：仍据本章 cast 确定性更新人物、沿用旧梗概", async () => {
+    // 复刻线上 422（内容审核 1027）：档案官 LLM 调用抛错。
+    const throwingClient = {
+      chat: async () => {
+        throw new Error("LLM 请求失败 (model=MiniMax-M3): 422 Unprocessable Entity\noutput new_sensitive (1027)");
+      },
+    } as unknown as LLMClient;
+
+    const prev = emptyMemory(emptyWorldBible);
+    prev.rollingSummary = "第 27 章为止：陈默已掌控半个港区。";
+
+    const archivist = new Archivist(throwingClient);
+    const next = await archivist.updateMemory(prev, chapter);
+
+    // 不抛错，返回可用记忆：人物内核据本章 cast 落档，旧梗概保留。
+    expect(next.characters.find((c) => c.name === "陈默")).toBeTruthy();
+    expect(next.characters.find((c) => c.name === "陈默")!.identity).toBe("退学少年出身的帮派头目");
+    expect(next.rollingSummary).toBe("第 27 章为止：陈默已掌控半个港区。");
   });
 });

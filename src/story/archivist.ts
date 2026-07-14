@@ -308,13 +308,27 @@ export class Archivist {
       .filter(Boolean)
       .join("\n\n");
 
-    const { message } = await this.client.chat({
-      messages: [
-        { role: "system", content: system },
-        { role: "user", content: user },
-      ],
-      temperature: 0.4,
-    });
-    return parseMemoryUpdate(message.content ?? "");
+    // 档案官只是记忆簿记：本章的正文（演章+成文）此刻已生成完毕，绝不能因一次
+    // 抽取失败（内容审核 1027、余额、鉴权、超时、解析异常等）就把整章丢弃、令全书中断。
+    // 失败即降级为【空更新】：updateMemory 仍会据本章 cast 确定性地更新人物内核，
+    // 并沿用上一版伏笔/道具/梗概/地点，连贯性略降但写作流水线继续。
+    let content: string;
+    try {
+      const { message } = await this.client.chat({
+        messages: [
+          { role: "system", content: system },
+          { role: "user", content: user },
+        ],
+        temperature: 0.4,
+      });
+      content = message.content ?? "";
+    } catch (err) {
+      console.error(
+        `\x1b[33m[档案] 第 ${chapter.chapterNo} 章记忆抽取失败，降级为仅确定性更新（本章已成文，不影响存盘）：` +
+          `${err instanceof Error ? err.message.split("\n")[0] : String(err)}\x1b[0m`,
+      );
+      content = "";
+    }
+    return parseMemoryUpdate(content);
   }
 }

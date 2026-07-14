@@ -1,5 +1,10 @@
 import { describe, expect, test } from "bun:test";
-import { extractJsonObject, escapeStrayQuotes } from "../src/core/json.ts";
+import {
+  extractJsonObject,
+  escapeStrayQuotes,
+  balanceBrackets,
+  findArrayField,
+} from "../src/core/json.ts";
 
 describe("extractJsonObject", () => {
   test("直接解析合法 JSON", () => {
@@ -32,6 +37,61 @@ describe("extractJsonObject", () => {
     expect(o).not.toBeNull();
     expect(o!.a).toBe('他说"走"，我便"走"了');
     expect(o!.b).toBe("正常");
+  });
+
+  test("修复：模型漏写尾部 `}`，以 `]` 收尾也能解析（真实骨架失败样本形态）", () => {
+    // 复刻 planner 骨架失败：worldBible 少一个 `}`，acts 被嵌进 worldBible，整体少一个尾 `}`。
+    const raw =
+      '{"title":"龙头渡","worldBible":{"era":"当代","tone":"冷硬","acts":[{"title":"下山","summary":"少年退学","chapters":10}]}';
+    expect(() => JSON.parse(raw)).toThrow();
+    const o = extractJsonObject(raw);
+    expect(o).not.toBeNull();
+    expect(o!.title).toBe("龙头渡");
+    // acts 被错误嵌在 worldBible 里，findArrayField 深度找回。
+    const acts = findArrayField(o, "acts");
+    expect(acts).toHaveLength(1);
+    expect((acts![0] as Record<string, unknown>).title).toBe("下山");
+  });
+});
+
+describe("balanceBrackets", () => {
+  test("补齐缺失的尾部 `}`", () => {
+    expect(JSON.parse(balanceBrackets('{"a":1'))).toEqual({ a: 1 });
+    expect(JSON.parse(balanceBrackets('{"a":[1,2]'))).toEqual({ a: [1, 2] });
+  });
+
+  test("以 `]` 收尾、缺外层 `}` 时补齐", () => {
+    expect(JSON.parse(balanceBrackets('{"a":{"b":[1]'))).toEqual({ a: { b: [1] } });
+  });
+
+  test("去掉尾随逗号避免 `,}`", () => {
+    expect(JSON.parse(balanceBrackets('{"a":1,'))).toEqual({ a: 1 });
+  });
+
+  test("已平衡的 JSON 不被破坏", () => {
+    const s = '{"a":1,"b":[2,3]}';
+    expect(JSON.parse(balanceBrackets(s))).toEqual({ a: 1, b: [2, 3] });
+  });
+
+  test("字符串里的括号不参与计数", () => {
+    const s = '{"a":"里面有 { [ 括号"';
+    expect(JSON.parse(balanceBrackets(s))).toEqual({ a: "里面有 { [ 括号" });
+  });
+});
+
+describe("findArrayField", () => {
+  test("顶层数组直接命中", () => {
+    expect(findArrayField({ acts: [1, 2] }, "acts")).toEqual([1, 2]);
+  });
+
+  test("嵌套数组深度找回", () => {
+    expect(findArrayField({ worldBible: { acts: [{ t: 1 }] } }, "acts")).toEqual([{ t: 1 }]);
+  });
+
+  test("缺失或非对象返回 null", () => {
+    expect(findArrayField({ x: 1 }, "acts")).toBeNull();
+    expect(findArrayField(null, "acts")).toBeNull();
+    expect(findArrayField([1, 2, 3], "acts")).toBeNull();
   });
 });
 

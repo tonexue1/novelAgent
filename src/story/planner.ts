@@ -1,6 +1,6 @@
 import type { LLMClient } from "../core/llm/client.ts";
 import type { Message } from "../core/llm/types.ts";
-import { extractJsonObject, str, strArray } from "../core/json.ts";
+import { extractJsonObject, findArrayField, str, strArray } from "../core/json.ts";
 import {
   renderWorldBrief,
   renderOpenThreads,
@@ -42,10 +42,20 @@ const JSON_QUOTE_RULE =
  * 题材读者口味，并明确点名要避开的套路。
  */
 const BOOK_TITLE_RULE =
-  "- 【书名铁律】书名要抓人、有记忆点、朗朗上口，一眼点出核心看点/独特设定/身份反差，让目标读者想立刻点开；" +
-  "并契合题材与读者口味：都市/悬疑等现代题材可较口语、较具体、甚至略长而带钩子；武侠/仙侠/玄幻/奇幻可凝练有意境但仍需有独特记忆点。" +
-  "严禁空泛文艺、辞藻堆砌、烂大街的通用意象（如“烟火/山河/风云/苍穹/浮生/繁华”一类）与套路化老后缀（《XX录》《XX诀》《XX传》《XX歌》《XX赋》）；" +
-  "宁可具体独特，也不要四平八稳的平庸书名。";
+  "- 【书名铁律】书名要抓人、有记忆点、朗朗上口，一眼勾起好奇、让目标读者想立刻点开，且【必须贴合前提的主角与核心关系/情感】，不能是与故事内核无关的意象。" +
+  "【优先做法】用一个【具体的意象/象征物/关键信物/一句黑话/一个地名或场景】来命名（如以某件贯穿全书的信物、某句规矩、某个符号为名），让书名像一枚钩子而非一句简介；现代言情/青春题材也可直接落在人物关系或情感上。" +
+  "【严禁】把主角身份或前提原样拼进书名的直白概括式命名（如“草根+教父”“废柴+逆袭”“少年+复仇”这类把设定塞满标题的写法）；也严禁土味、油腻、像烂片译名的口语堆砌。" +
+  "契合题材：现代题材（都市/悬疑）可具体、可略长带钩子但要显质感；武侠/仙侠/玄幻/奇幻宜凝练有意境且有独特记忆点。" +
+  "严禁空泛文艺、辞藻堆砌、烂大街的通用意象（如“烟火/山河/风云/苍穹/浮生/繁华”一类）与套路化老后缀（《XX录》《XX诀》《XX传》《XX歌》《XX赋》）。" +
+  "宁可具体、克制、有质感，也不要直白平庸或油腻。";
+
+/**
+ * 忠于前提铁律：防止规划把用户的小前提偷换成题材默认套路（如把校园恋爱改写成豪门商战）。
+ * 前提的主角、核心关系与情感钩子、隐含子类型必须始终是全书的心脏。
+ */
+const PREMISE_FIDELITY_RULE =
+  "- 【忠于前提铁律】必须紧扣用户前提本身的【主角、核心关系与情感钩子、隐含子类型】立意：前提是校花与废柴的校园恋爱，就写这段恋爱的甜与虐、成长与错过，主角就是那个“废柴”，别把它偷换成豪门并购、夺嫡商战之类的题材套路；前提是市井小人物，就写市井。" +
+  "可以合理扩展世界、人物与冲突，但前提许下的那段核心关系/情感/看点必须自始至终是主线的心脏，书名、各幕、结局都要围绕它展开，而不是喧宾夺主地另起炉灶。";
 
 export interface OutlineResult {
   title: string;
@@ -125,7 +135,9 @@ export function parseOutline(text: string): OutlineResult | null {
   const o = extractJsonObject(text);
   if (!o) return null;
 
-  const chapters = parseChapterPlans(o.chapters);
+  const chapters = parseChapterPlans(
+    Array.isArray(o.chapters) ? o.chapters : findArrayField(o, "chapters"),
+  );
   if (chapters.length === 0) return null;
 
   const premise = str(o.premise);
@@ -199,7 +211,8 @@ export function parseActList(v: unknown): ActPlan[] {
 export function parseSkeleton(text: string): Skeleton | null {
   const o = extractJsonObject(text);
   if (!o) return null;
-  const acts = parseActList(o.acts);
+  // 兜底：模型漏写 worldBible 的 `}` 时，acts 会被错误嵌进 worldBible 里，深度查找找回。
+  const acts = parseActList(Array.isArray(o.acts) ? o.acts : findArrayField(o, "acts"));
   if (acts.length === 0) return null;
   return {
     title: str(o.title) || "无名武侠",
@@ -590,6 +603,7 @@ export class Planner {
       "要求：",
       "- 每一幕给出【幕名 title】【本幕主要剧情与目标 summary（2-4 句，交代这一幕从何处起、要达成什么、推进到何处）】【本幕计划章数 chapters（整数）】。",
       `- 所有幕的 chapters 之和应约等于 ${target}。各幕要环环相扣、层层推进，指向结局；避免各幕孤立或原地打转。`,
+      PREMISE_FIDELITY_RULE,
       `- 【题材设定铁律】${genre.worldGuidance}`,
       "- 【命名与不剧透铁律】书名、幕名都不得直接泄露某个需要长期隐藏的身份或结局关键真名；" +
         "也不要用「无名客／神秘人／无名少年」这类占位式名号。若主角身份是核心悬念，请用中性、贴合其当下处境的化名或意象来命名，把真相留到剧情自然揭晓。",
@@ -830,6 +844,7 @@ export class Planner {
       "要求：",
       `- 分章 ${chapterHint}，每章给出【标题】与【本章目标 goal】（这一章要推进的核心事件/冲突/转折），可给 2-3 条关键节拍 keyBeats。`,
       "- 各章要环环相扣、层层推进，指向结局；避免各章孤立。",
+      PREMISE_FIDELITY_RULE,
       `- 【题材设定铁律】${genre.worldGuidance}`,
       "- 【命名与不剧透铁律】书名、幕名都不得直接泄露某个需要长期隐藏的身份或结局关键真名；" +
         "也不要用「无名客／神秘人／无名少年」这类占位式名号。若主角身份是核心悬念，请用中性、贴合其当下处境的化名或意象来命名，把真相留到剧情自然揭晓。",

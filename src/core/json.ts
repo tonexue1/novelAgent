@@ -62,13 +62,67 @@ export function escapeStrayQuotes(json: string): string {
   return out;
 }
 
-/** 抽取一个 JSON 对象；失败返回 null。解析失败时尝试修复游离双引号再解析一次。 */
+/**
+ * 补齐缺失的右括号/右方括号。模型在超长 JSON 里偶尔漏写闭合括号（最典型是漏掉
+ * 嵌套对象的 `}`，导致整份对象少一个尾 `}`，此时输出常以 `]` 收尾——按 `}` 截取反而
+ * 会把内容切断）。这里字符串感知地统计未闭合的 `{` `[`，在末尾按 LIFO 追加对应闭合符。
+ * 只在直接解析失败时兜底调用；对已平衡的 JSON 仅去掉尾随逗号，无其它副作用。纯函数。
+ */
+export function balanceBrackets(json: string): string {
+  const stack: string[] = [];
+  let inStr = false;
+  let esc = false;
+  for (let i = 0; i < json.length; i++) {
+    const c = json[i]!;
+    if (inStr) {
+      if (esc) esc = false;
+      else if (c === "\\") esc = true;
+      else if (c === '"') inStr = false;
+      continue;
+    }
+    if (c === '"') inStr = true;
+    else if (c === "{" || c === "[") stack.push(c);
+    else if (c === "}") {
+      if (stack[stack.length - 1] === "{") stack.pop();
+    } else if (c === "]") {
+      if (stack[stack.length - 1] === "[") stack.pop();
+    }
+  }
+  let out = json.replace(/,\s*$/, ""); // 去掉尾随逗号，避免追加闭合符后出现 `,}`
+  for (let i = stack.length - 1; i >= 0; i--) out += stack[i] === "{" ? "}" : "]";
+  return out;
+}
+
+/** 抽取一个 JSON 对象；失败返回 null。依次尝试：直接解析 → 修复游离双引号 → 补齐缺失括号。 */
 export function extractJsonObject(text: string): Record<string, unknown> | null {
   const start = text.indexOf("{");
+  if (start === -1) return null;
   const end = text.lastIndexOf("}");
-  if (start === -1 || end === -1 || end < start) return null;
-  const slice = text.slice(start, end + 1);
-  return parseObject(slice) ?? parseObject(escapeStrayQuotes(slice));
+  if (end > start) {
+    const slice = text.slice(start, end + 1);
+    const direct = parseObject(slice) ?? parseObject(escapeStrayQuotes(slice));
+    if (direct) return direct;
+  }
+  // 兜底：模型漏写尾部闭合括号时，从首个 `{` 起补齐括号再解析（不能依赖 lastIndexOf("}")）。
+  const rest = text.slice(start);
+  return (
+    parseObject(balanceBrackets(rest)) ?? parseObject(balanceBrackets(escapeStrayQuotes(rest)))
+  );
+}
+
+/**
+ * 在已解析对象里深度优先查找首个名为 key 的数组字段（含嵌套对象内）。
+ * 用于兜底：模型漏写某层 `}` 时，本应在顶层的数组（如 acts）会被错误嵌进上一个对象里。
+ */
+export function findArrayField(obj: unknown, key: string): unknown[] | null {
+  if (!obj || typeof obj !== "object" || Array.isArray(obj)) return null;
+  const rec = obj as Record<string, unknown>;
+  if (Array.isArray(rec[key])) return rec[key] as unknown[];
+  for (const v of Object.values(rec)) {
+    const found = findArrayField(v, key);
+    if (found) return found;
+  }
+  return null;
 }
 
 /** 取字符串字段，非字符串则空串。 */
