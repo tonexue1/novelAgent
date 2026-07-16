@@ -14,10 +14,11 @@ import type { Outline, WorldBible, StyleCard, StyleIntensity } from "../src/stor
 import {
   PLAN_RUBRIC,
   PROSE_RUBRIC,
+  REVIEW_RUBRIC,
   renderRubricForPrompt,
   type EvalScore,
 } from "./rubric.ts";
-import { parsePlanScore, parseProseScore } from "./parse.ts";
+import { parsePlanScore, parseProseScore, parseReviewScore } from "./parse.ts";
 
 /** 裁判统一的输出格式约定（严格 JSON）。 */
 function outputContract(): string {
@@ -143,5 +144,51 @@ export class EvalAgent {
       maxTokens: 3000,
     });
     return parseProseScore(message.content ?? "");
+  }
+
+  /**
+   * 评测【审校】：给定原稿、审校后的修订稿、以及植入的已知硬伤与须保留的故事要素，
+   * 核对审校是否【修掉了硬伤】且【没改变故事】。这是给 Reviewer 的"看护"评测。
+   */
+  async evalReview(input: {
+    goal: string;
+    draft: string;
+    revised: string;
+    plantedBugs: string[];
+    invariants: string[];
+  }): Promise<EvalScore> {
+    const { goal, draft, revised, plantedBugs, invariants } = input;
+    const system = [
+      "你是一位严格的审校质检裁判。下面给你一段【原稿】、一段由审校 agent 产出的【修订稿】，",
+      "以及【原稿里植入的已知硬伤】（审校应当修掉）和【须保留的故事要素】（审校绝不能改动）。",
+      "你的判断重点：",
+      "1) 逐条核对【已知硬伤】是否在修订稿里被真正修正（改没改到点子上）；漏改、没改干净都要扣分。",
+      "2) 逐条核对【须保留的故事要素】是否原样保留——审校只该修硬伤，【不得改变情节、人物、结局、设定或文风】。",
+      "3) 改动是否克制、有无引入新的矛盾/病句、标题与结构是否保留。",
+      "",
+      "评测点（逐项打分，1-5 分）：",
+      renderRubricForPrompt(REVIEW_RUBRIC),
+      "",
+      outputContract(),
+    ].join("\n");
+
+    const user = [
+      `【本章目标】${goal}`,
+      `【原稿里植入的已知硬伤（修订稿应修正）】\n${plantedBugs.map((b, i) => `${i + 1}. ${b}`).join("\n")}`,
+      `【须保留的故事要素（修订稿不得改动）】\n${invariants.map((v, i) => `${i + 1}. ${v}`).join("\n")}`,
+      `【原稿】\n${draft}`,
+      `【修订稿】\n${revised}`,
+      "请按评测点打分，输出 JSON。",
+    ].join("\n\n");
+
+    const { message } = await this.client.chat({
+      messages: [
+        { role: "system", content: system },
+        { role: "user", content: user },
+      ],
+      temperature: 0.2,
+      maxTokens: 3000,
+    });
+    return parseReviewScore(message.content ?? "");
   }
 }

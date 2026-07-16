@@ -81,6 +81,13 @@ export interface NextChapterResult {
   project: NovelProject;
 }
 
+/** 解析审校反射轮数环境变量：非法/未设时返回 undefined，交由 agent 用默认（2）。 */
+function parseReviewRounds(raw: string | undefined): number | undefined {
+  if (raw === undefined) return undefined;
+  const n = parseInt(raw.trim(), 10);
+  return Number.isFinite(n) && n >= 0 ? n : undefined;
+}
+
 function splitProse(raw: string): { title: string; body: string } {
   const text = raw.trim();
   const nl = text.indexOf("\n");
@@ -106,6 +113,10 @@ export class NovelEngine {
       client: this.client,
       onEvent: opts.onEvent,
       maxBeats: opts.maxBeats,
+      // 成文后审校反射（默认开）；OPENAI_REVIEW=off 关闭以整段省掉。
+      review: process.env.OPENAI_REVIEW?.trim().toLowerCase() !== "off",
+      // 反射循环最多几轮（默认 2）；OPENAI_REVIEW_ROUNDS 可调（如设 1 只挑一次+改一次以省调用）。
+      reviewRounds: parseReviewRounds(process.env.OPENAI_REVIEW_ROUNDS),
     });
     this.onEvent = opts.onEvent;
   }
@@ -285,7 +296,9 @@ export class NovelEngine {
 
     // 2) 执笔成文（单 agent 统一文笔）。
     const raw = await this.drama.novelizeScene(scene, transcript, chapterSeed, ctx);
-    const { title, body } = splitProse(raw);
+    // 2.5) 审校修订：成文后主动修逻辑/常识/时间线/人设/既有事实矛盾（best-effort，失败沿用原文）。
+    const reviewed = await this.drama.reviewScene(raw, scene, transcript, ctx);
+    const { title, body } = splitProse(reviewed);
     const chapter: GeneratedChapter = { n: plan.n, title, prose: body };
 
     // 3) 更新记忆（档案官）。

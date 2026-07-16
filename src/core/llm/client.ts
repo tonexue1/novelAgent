@@ -51,8 +51,9 @@ export class LLMClient {
 
   /**
    * 发起一次对话补全请求，返回归一化后的 assistant 消息。
-   * 遇到瞬时错误（上游 529 过载、5xx 抖动、限流、网络中断）会自动退避重试，
-   * 避免整章生成因一次抖动前功尽弃；非瞬时错误（内容审核、余额、鉴权、超时）直接抛出。
+   * 遇到瞬时错误（上游 529 过载、5xx 抖动、限流、网络中断、请求超时）会自动退避重试，
+   * 避免整章生成因一次抖动前功尽弃；其中超时另设更小的重试上限（config.timeoutRetries，
+   * 因每次重试都要再等一个 timeoutMs）。非瞬时错误（内容审核、余额、鉴权）直接抛出。
    */
   async chat(req: ChatRequest): Promise<ChatResult> {
     const body: Record<string, unknown> = {
@@ -79,6 +80,7 @@ export class LLMClient {
 
     const maxAttempts = this.config.maxRetries + 1;
     let lastErr: Error | undefined;
+    let timeoutRetries = 0;
     for (let attempt = 1; attempt <= maxAttempts; attempt++) {
       try {
         const result = await this.attemptChat(body, promptChars);
@@ -90,10 +92,19 @@ export class LLMClient {
           // 非瞬时错误，或已用尽重试次数：抛出可读信息。
           throw transient ? new Error((err as TransientError).message) : err;
         }
+        const isTimeout = (err as TransientError).isTimeout;
+        // 超时单独限流：整次请求粒度的超时重试代价高（每次都要再白等一个 timeoutMs），
+        // 超过更小的上限（config.timeoutRetries）就不再等，直接抛。
+        if (isTimeout && ++timeoutRetries > this.config.timeoutRetries) {
+          throw new Error((err as TransientError).message);
+        }
         lastErr = err as Error;
         const delayMs = backoffMs(attempt);
+        // 日志按错误类型显示对应的重试上限：超时看 timeoutRetries，其余看 maxRetries，避免印出误导性的分母。
+        const tries = isTimeout ? timeoutRetries : attempt;
+        const cap = isTimeout ? this.config.timeoutRetries : this.config.maxRetries;
         console.log(
-          `\x1b[33m[重试] ${this.label} ${this.config.model} 第 ${attempt}/${this.config.maxRetries} 次失败：` +
+          `\x1b[33m[重试] ${this.label} ${this.config.model} 第 ${tries}/${cap} 次失败：` +
             `${(err as TransientError).shortReason}；${(delayMs / 1000).toFixed(1)}s 后重试\x1b[0m`,
         );
         await sleep(delayMs);
@@ -126,10 +137,14 @@ export class LLMClient {
       });
     } catch (err) {
       if (controller.signal.aborted) {
-        // 超时不重试：已经等了很久，多半是这次请求本身太慢，重试只会再等一遍。
-        throw new Error(
+        // 超时【可重试】（有界）：现实中超时多半是这一次连接被挂住（网络抖动/上游偶发卡死），
+        // 重开一个请求往往很快就成；而非模型真的要算满 timeoutMs。故给它有限几次机会（见 config.timeoutRetries），
+        // 仍不行才抛给上层。整次请求粒度的超时代价高，所以上限比一般瞬时错误更小。
+        throw new TransientError(
+          "请求超时",
           `LLM 请求超时 (model=${this.config.model}, ${this.config.timeoutMs}ms)：上游未在时限内返回。` +
             `可换更快的模型，或用 OPENAI_TIMEOUT_MS 调大超时。`,
+          true,
         );
       }
       // 网络层错误（连接重置/DNS/中断）多为瞬时，可重试。
@@ -191,13 +206,16 @@ export class LLMClient {
 }
 
 /**
- * 瞬时错误标记：可安全重试（上游过载/限流/5xx/网络抖动/空响应）。
+ * 瞬时错误标记：可安全重试（上游过载/限流/5xx/网络抖动/空响应/超时）。
  * shortReason 用于重试日志，message 是抛给上层的完整可读信息。
+ * isTimeout 标记"请求超时"这一类：它也可重试，但因单次代价高（要再等一个 timeoutMs），
+ * 单独设更小的重试上限（见 config.timeoutRetries），避免最坏情况把时间成倍拉长。
  */
 class TransientError extends Error {
   constructor(
     readonly shortReason: string,
     message: string,
+    readonly isTimeout = false,
   ) {
     super(message);
     this.name = "TransientError";

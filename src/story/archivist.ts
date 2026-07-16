@@ -288,6 +288,8 @@ export class Archivist {
       "- props：本章涉及的关键道具/信物，给出其【当前唯一持有者 holder】【所在位置 location】【状态 status】。同一件道具只能有一个当前持有者/位置——若易主则写新的持有者，不要新增'又一个藏处'。",
       "- threads：本章新埋下或已回收的伏笔/悬念；status 用 open 或 resolved；给每条一个稳定的短 id（同一伏笔历章须用同一 id/同一描述）。",
       "- worldAdditions：本章新出现且值得记入设定的地点/势力/武功规则/信物/其它设定（只列真正新增，不要重复已知设定）。",
+      "  · 命名要干净：地点/势力/信物一律用【专名本身】（如'偏殿暖阁''魔尊玄晦''封印阵眼''九幽寒池'），【不要】把'万年/万古/万载/上古/千年'这类史诗修辞形容词并进名字里（写'偏殿暖阁'，不要写'万年私域偏殿暖阁'）。这类苍茫修辞是正文的临场笔法，不进设定库——设定库只存能反复复用的干名。",
+      "  · 不要为已在设定库里的地点/势力换一种措辞再报一遍（同一处'偏殿暖阁'只该存在一条，勿逐章重述成近义新条目）。",
       "- rollingSummary：重写'故事梗概至今'，涵盖到本章为止的主干，控制在 300 字以内，供后续章节参考。",
       "只输出一个 JSON 对象：",
       '{"event":"","currentLocation":"","rollingSummary":"","worldAdditions":{"locations":[],"factions":[],"powerSystem":[],"items":[],"lore":[]},"props":[{"name":"","holder":"","location":"","status":""}],"threads":[{"id":"","description":"","status":"open"}],"characterUpdates":[{"name":"","aliases":[],"status":"","currentGoal":"","relationships":[{"who":"","relation":""}],"arcNotes":"","secretRevealed":false}]}',

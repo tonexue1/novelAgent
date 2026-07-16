@@ -30,7 +30,13 @@ import type { DramaEvent } from "./drama/events.ts";
  * 产物在 novels/<slug>/（novel.json / outline.json / memory.json / chapters/chNN.md）。
  */
 
-/** 把结构化事件打印到终端（作为 onEvent sink）。 */
+/**
+ * 把结构化事件打印到终端（作为 onEvent sink）。
+ *
+ * 只渲染 drama/engine 内部【不会自行打印】的高层事件（大纲、开章、成文、记忆、收官）。
+ * 逐拍的 scene/beat/narration 已由 WuxiaDramaAgent 直接用 logger 输出，这里不再重复渲染，
+ * 否则每一拍会被打印两遍。
+ */
 function printEvent(ev: DramaEvent): void {
   switch (ev.type) {
     case "outline":
@@ -44,15 +50,6 @@ function printEvent(ev: DramaEvent): void {
     case "chapter-start":
       logger.step(ev.n, `开写第 ${ev.n} 章《${ev.title}》`);
       logger.info(`目标：${ev.goal}`);
-      break;
-    case "scene":
-      logger.info(`【背景】${ev.background}`);
-      break;
-    case "beat":
-      logger.info(`${ev.actor}：${ev.content}`);
-      break;
-    case "narration":
-      logger.info(`【旁白】${ev.content}`);
       break;
     case "chapter-prose":
       console.log(`\n${"─".repeat(48)}\n# ${ev.title}\n\n${ev.content}\n`);
@@ -107,9 +104,19 @@ async function cmdNew(
     return;
   }
 
-  // 一口气写完：反复推进直到无待写章节。
+  // 一口气写完：反复推进直到无待写章节。单章硬失败则停下（前面章节已逐章存盘，可重跑续写）。
   for (;;) {
-    const res = await engine.generateNextChapter(slug);
+    let res;
+    try {
+      res = await engine.generateNextChapter(slug);
+    } catch (err) {
+      console.error(
+        `\x1b[31m[写作] 推进失败，就此停下（已写章节均已存盘）：` +
+          `${err instanceof Error ? err.message.split("\n")[0] : String(err)}\x1b[0m`,
+      );
+      logger.info(`稍后可重跑续写：bun novel:next ${slug}`);
+      break;
+    }
     if (res.done) break;
   }
   logger.info(`\n已保存到 ${projectPath(slug)}`);
@@ -121,8 +128,20 @@ async function cmdNext(slug: string, count: number): Promise<void> {
     process.exit(1);
   }
   const engine = new NovelEngine({ client: new LLMClient(), onEvent: printEvent });
+  let written = 0;
   for (let i = 0; i < count; i++) {
-    const res = await engine.generateNextChapter(slug);
+    let res;
+    try {
+      res = await engine.generateNextChapter(slug);
+    } catch (err) {
+      console.error(
+        `\x1b[31m[续写] 推进失败，已成功写入 ${written} 章（均已存盘），就此停下：` +
+          `${err instanceof Error ? err.message.split("\n")[0] : String(err)}\x1b[0m`,
+      );
+      logger.info(`稍后可重跑续写：bun novel:next ${slug}`);
+      break;
+    }
+    if (res.chapter) written++;
     if (res.done) break;
   }
   logger.info(`\n已保存到 ${projectPath(slug)}`);

@@ -12,6 +12,7 @@ import {
   MAX_SCORE,
   PLAN_RUBRIC,
   PROSE_RUBRIC,
+  REVIEW_RUBRIC,
   rubricLabels,
   type EvalScore,
   type MetricScore,
@@ -95,4 +96,9 @@ export function parsePlanScore(text: string): EvalScore {
 /** 解析文笔风味打分。 */
 export function parseProseScore(text: string): EvalScore {
   return parseEvalScore(text, PROSE_RUBRIC);
+}
+
+/** 解析审校打分。 */
+export function parseReviewScore(text: string): EvalScore {
+  return parseEvalScore(text, REVIEW_RUBRIC);
 }

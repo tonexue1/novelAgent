@@ -5,6 +5,8 @@ import { LLMClient } from "../src/core/llm/client.ts";
 import { Planner } from "../src/story/planner.ts";
 import type { OutlineCheckpoint } from "../src/story/planner.ts";
 import { Novelist } from "../src/drama/novelist.ts";
+import { Reviewer } from "../src/drama/reviewer.ts";
+import { reflectReview } from "../src/drama/reflect.ts";
 import { resolveGenre } from "../src/story/genre.ts";
 import {
   resolveStyleCard,
@@ -15,9 +17,9 @@ import {
 } from "../src/story/style.ts";
 import type { DramaContext, Scene, Beat } from "../src/drama/scene.ts";
 import { EvalAgent } from "./agent.ts";
-import { loadFixture, listFixtures } from "./fixtures.ts";
-import { renderPlanReport, renderProseReport, renderScoreLine } from "./report.ts";
-import type { EvalScore, ProseFixture } from "./rubric.ts";
+import { loadFixture, listFixtures, loadReviewFixture } from "./fixtures.ts";
+import { renderPlanReport, renderProseReport, renderReviewReport, renderScoreLine } from "./report.ts";
+import type { EvalScore, ProseFixture, ReviewFixture } from "./rubric.ts";
 import type { Outline, WorldBible } from "../src/story/types.ts";
 
 /** 目标章数超过此值即自动切【分卷滚动规划】（骨架 + 只展开第一卷），避免整书硬展开又慢又崩。 */
@@ -169,8 +171,23 @@ async function runPlanEval(args: string[]): Promise<void> {
   console.log(`报告：${join(dir, "report.md")}\n`);
 }
 
+/** contextFromFixture 需要的字段（ProseFixture 与 ReviewFixture 的公共子集）。 */
+type FixtureContextInput = Pick<
+  ProseFixture,
+  "genre" | "style" | "intensity" | "chapterNo" | "scene" | "transcript" | "goal" | "worldBrief"
+> & {
+  /** 前情梗概（审校 fixture 专用，喂 ctx.storySoFar 作跨章锚点）。 */
+  storySoFar?: string;
+  /** 上一章结尾（审校 fixture 专用，喂 ctx.previousChapterTail 作跨章承接核对）。 */
+  previousChapterTail?: string;
+};
+
 /** 由 fixture 装配 DramaContext（复用 genre/style 的渲染，与正式生成同源）。 */
-function contextFromFixture(fx: ProseFixture, styleOverride?: string, intensityOverride?: string): {
+function contextFromFixture(
+  fx: FixtureContextInput,
+  styleOverride?: string,
+  intensityOverride?: string,
+): {
   ctx: DramaContext;
   scene: Scene;
   transcript: Beat[];
@@ -196,7 +213,8 @@ function contextFromFixture(fx: ProseFixture, styleOverride?: string, intensityO
     goal: fx.goal,
     worldBrief: fx.worldBrief ?? "",
     returningCharacters: [],
-    storySoFar: "",
+    storySoFar: fx.storySoFar ?? "",
+    previousChapterTail: fx.previousChapterTail,
     openThreads: "",
     genrePersona: genre.persona,
     genreStyle: genre.styleGuidance,
@@ -262,6 +280,83 @@ async function runProseEval(args: string[]): Promise<void> {
   console.log(`报告：${join(dir, "report.md")}\n`);
 }
 
+async function runReviewEval(args: string[]): Promise<void> {
+  const idOrPath = args.find((a) => !a.startsWith("--"));
+  if (!idOrPath) {
+    console.error("用法：bun run eval review <fixtureId|path>   # 例：bun run eval review campus-sand");
+    process.exit(1);
+    return;
+  }
+
+  let fx: ReviewFixture;
+  try {
+    fx = loadReviewFixture(idOrPath);
+  } catch (err) {
+    console.error(`\x1b[31m${err instanceof Error ? err.message : String(err)}\x1b[0m`);
+    process.exit(1);
+    return;
+  }
+
+  const client = makeClient();
+  const { ctx, scene, transcript } = contextFromFixture(fx);
+  const rounds = Math.max(1, parseInt(flag(args, "rounds") ?? "2", 10) || 2);
+
+  // 跑真正的【反射循环】（与正式管线同源：同一个 Reviewer 挑刺 + 同一个 Novelist 定向修订，
+  // 直到无硬伤或用满轮数）。这样 eval 看护的是线上真实行为，而非某个孤立函数。
+  console.log(
+    `\x1b[36m[产出]「${fx.label}」反射审校中…（植入硬伤 ${fx.plantedBugs.length} 条，最多 ${rounds} 轮）\x1b[0m`,
+  );
+  const reviewer = new Reviewer(client.withRole("reviewer"));
+  const novelist = new Novelist(client.withRole("novelist"));
+  const result = await reflectReview(reviewer, novelist, fx.draft, scene, transcript, ctx, {
+    maxRounds: rounds,
+    onRound: (r) => {
+      const verdict = r.error
+        ? `本轮中断（${r.error}），保留当前稿`
+        : r.issueCount === 0
+          ? (r.parsed ? "无硬伤，通过" : "评审未能解析，暂当通过")
+          : r.revised
+            ? `挑出 ${r.issueCount} 处硬伤，已定向修订`
+            : `挑出 ${r.issueCount} 处硬伤，但修订稿未通过护栏、沿用上一版`;
+      console.log(`\x1b[36m  [第 ${r.round} 轮] ${verdict}\x1b[0m`);
+    },
+  });
+  const revised = result.prose.trim();
+  const changed = revised !== fx.draft.trim();
+  console.log(
+    `\x1b[36m[产出] 反射结束：${result.passed ? "收尾无硬伤" : "用满轮数仍存疑"}，共 ${result.rounds.length} 轮\x1b[0m`,
+  );
+
+  console.log(`\x1b[36m[监视] 交裁判核对（硬伤是否修掉 + 故事是否保留）…\x1b[0m`);
+  const score = await new EvalAgent(client).evalReview({
+    goal: fx.goal,
+    draft: fx.draft,
+    revised,
+    plantedBugs: fx.plantedBugs,
+    invariants: fx.invariants,
+  });
+
+  const report = renderReviewReport({
+    fixtureLabel: fx.label,
+    goal: fx.goal,
+    draft: fx.draft,
+    revised,
+    changed,
+    plantedBugs: fx.plantedBugs,
+    invariants: fx.invariants,
+    score,
+  });
+  const dir = persist("review", fx.id, {
+    "input.json": JSON.stringify(fx, null, 2),
+    "draft.md": `${fx.draft}\n`,
+    "revised.md": `${revised}\n`,
+    "score.json": JSON.stringify(score, null, 2),
+    "report.md": report,
+  });
+  console.log("\n" + renderScoreLine("审校", fx.label, score));
+  console.log(`报告：${join(dir, "report.md")}\n`);
+}
+
 function listFixturesCmd(): void {
   const fx = listFixtures();
   if (!fx.length) {
@@ -278,6 +373,7 @@ function usage(): void {
       "用法：",
       '  bun run eval plan "<一句前提>" [--genre=仙侠] [--chapters=10] [--rolling]',
       "  bun run eval prose <fixtureId|path> [--style=chendong] [--intensity=strong]",
+      "  bun run eval review <fixtureId|path> [--rounds=2]   # 看护反射审校：植入硬伤的草稿 →（挑刺⇄定向修订）→ 裁判核对",
       "  bun run eval fixtures",
       "  （plan：--rolling 或 --chapters>40 时自动切分卷滚动，只出路线图+第一卷）",
     ].join("\n"),
@@ -290,6 +386,7 @@ async function main(): Promise<void> {
   const rest = args.slice(1);
   if (sub === "plan") return runPlanEval(rest);
   if (sub === "prose") return runProseEval(rest);
+  if (sub === "review") return runReviewEval(rest);
   if (sub === "fixtures") return listFixturesCmd();
   usage();
   process.exit(1);

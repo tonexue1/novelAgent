@@ -128,6 +128,43 @@ export function renderProseReport(input: {
   return L.join("\n");
 }
 
+/** 渲染审校评测报告：原稿 / 修订稿 / 打分，并列出植入硬伤与须保留要素。 */
+export function renderReviewReport(input: {
+  fixtureLabel: string;
+  goal: string;
+  draft: string;
+  revised: string;
+  changed: boolean;
+  plantedBugs: string[];
+  invariants: string[];
+  score: EvalScore;
+}): string {
+  const L: string[] = [];
+  L.push(`# 评测报告：审校看护 —「${input.fixtureLabel}」`);
+  L.push("");
+  L.push(`- 综合分：**${input.score.overall}/100**　审校是否改动原稿：${input.changed ? "是" : "否（原样返回）"}`);
+  L.push(`- 本章目标：${input.goal}`);
+  L.push("");
+  L.push("## 植入的已知硬伤（审校应修正）");
+  L.push("");
+  for (const b of input.plantedBugs) L.push(`- ${b}`);
+  L.push("");
+  L.push("## 须保留的故事要素（审校不得改动）");
+  L.push("");
+  for (const v of input.invariants) L.push(`- ${v}`);
+  L.push("");
+  L.push("## 1. 原稿（含植入硬伤）");
+  L.push("");
+  L.push(input.draft);
+  L.push("");
+  L.push("## 1b. 修订稿（审校产出）");
+  L.push("");
+  L.push(input.revised);
+  L.push("");
+  L.push(...scoreBlock(input.score));
+  return L.join("\n");
+}
+
 /** 一行终端总览。 */
 export function renderScoreLine(kind: string, label: string, sc: EvalScore): string {
   const worst = [...sc.metrics].sort((a, b) => a.score - b.score)[0];

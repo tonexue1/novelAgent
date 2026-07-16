@@ -22,6 +22,11 @@ export interface LLMConfig {
   thinking: ThinkingMode;
   /** 遇到瞬时错误（限流/过载/5xx/网络抖动）时的最大重试次数（不含首次）。 */
   maxRetries: number;
+  /**
+   * 【超时】专属的最大重试次数（不含首次），单独于 maxRetries。
+   * 超时每重试一次都要再白等一个 timeoutMs，代价远高于普通瞬时错误，故单设更小的上限。
+   */
+  timeoutRetries: number;
 }
 
 /** 单次 LLM 请求默认超时（毫秒）。成文/推理模型可能较慢，给足 4 分钟。 */
@@ -29,6 +34,12 @@ export const DEFAULT_TIMEOUT_MS = 240_000;
 
 /** 瞬时错误默认重试次数（不含首次）。上游 529 过载/500 抖动很常见，重试几次即可自愈。 */
 export const DEFAULT_MAX_RETRIES = 3;
+
+/**
+ * 超时默认重试次数（不含首次）。比 maxRetries 小：超时多半是这一次连接被挂住，重开常能很快成，
+ * 给它两次机会即可；但每次都要再等一个 timeoutMs，故不宜多。若模型本就算不完，请调大 OPENAI_TIMEOUT_MS。
+ */
+export const DEFAULT_TIMEOUT_RETRIES = 2;
 
 /** 读取非负整数环境变量；缺失/非法时回落到默认值。 */
 function readIntEnv(raw: string | undefined, fallback: number): number {
@@ -55,6 +66,7 @@ export const AGENT_ROLES = [
   "director",
   "character",
   "novelist",
+  "reviewer",
   "planner",
   "archivist",
   "eval",
@@ -102,5 +114,6 @@ export function loadConfig(): LLMConfig {
     // 默认关掉 M3 思考：推理内容反正会被 stripReasoning 丢弃，关掉能省下大量解码时间。
     thinking: parseThinking(process.env.OPENAI_THINKING, "disabled"),
     maxRetries: readIntEnv(process.env.OPENAI_MAX_RETRIES, DEFAULT_MAX_RETRIES),
+    timeoutRetries: readIntEnv(process.env.OPENAI_TIMEOUT_RETRIES, DEFAULT_TIMEOUT_RETRIES),
   };
 }

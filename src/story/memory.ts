@@ -207,15 +207,34 @@ export function reconcileProps(props: PropItem[], incoming: PropItem[]): PropIte
 }
 
 /**
+ * 史诗修辞前缀：这些形容词是文风调料，不该焊进实体专名。去重时一律剥掉，
+ * 避免"万年私域偏殿暖阁"与"偏殿暖阁"被当成两个地点，也顺带遏制"万年"通胀。
+ */
+const EPIC_PREFIX_RE = /(亘古|太古|上古|三千年|万古|万载|万年|千年)/g;
+
+/**
+ * 从一条设定描述里取【实体主名】做去重 key：取首个分隔符（——/：/（ 等）之前的
+ * 主名，剥掉史诗修辞前缀后再归一化。让"万年私域偏殿暖阁——…"与"偏殿暖阁：…"
+ * 归并为同一实体，避免同一地点/势力换个措辞就被当成新条目无限堆积。
+ */
+export function entityKey(s: string): string {
+  const head = s.split(/[—:：（(【\[、，。；;]/)[0] ?? s;
+  return normKey(head.replace(EPIC_PREFIX_RE, ""));
+}
+
+/**
  * 并集去重 + 近义合并 + 容量封顶：世界圣经各类设定只增会膨胀成噪声，这里
- * 用归一化 key 去掉重复/近义，并保留最新的 cap 条。
+ * 按【实体主名】去重（而非整串），同一实体只留一条最新表述，并保留最近活跃的
+ * cap 条。这样"偏殿暖阁"不会被反复重述成几十条带"万年"的近义设定。
  */
 export function mergeCapped(base: string[], add: string[], cap = WORLD_LIST_CAP): string[] {
-  const seen = new Map<string, string>(); // normKey -> 原文（后到覆盖，保留较新表述）
+  const seen = new Map<string, string>(); // entityKey -> 原文（后到覆盖并移到队尾：保留最新表述与最近活跃度）
   for (const s of [...base, ...add]) {
     const v = s.trim();
     if (!v) continue;
-    seen.set(normKey(v), v);
+    const key = entityKey(v) || normKey(v);
+    if (seen.has(key)) seen.delete(key); // 重设以刷新插入顺序，队尾=最近出现
+    seen.set(key, v);
   }
   const list = [...seen.values()];
   return list.length > cap ? list.slice(list.length - cap) : list;

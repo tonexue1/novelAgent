@@ -32,6 +32,18 @@ export const PLAN_RUBRIC: RubricItem[] = [
   { id: "pacing", label: "节奏分布", desc: "起承转合分布合理，铺垫/推进/高潮/收束比例得当。" },
 ];
 
+/**
+ * 审校评测点：给审校 agent「看护」——既要【抓到并修掉】植入的自洽硬伤（沙子类），
+ * 又【不能改变故事】。前两项是核心（修硬伤 + 保真），后三项守住"最小改动、不添乱"。
+ */
+export const REVIEW_RUBRIC: RubricItem[] = [
+  { id: "bugCatch", label: "硬伤修正", desc: "找出并修正【已知硬伤】里的逻辑/常识/时令/时间线/设定矛盾（如暑假的沙留到开学）。漏改则低分。" },
+  { id: "storyFidelity", label: "故事保真", desc: "情节走向、人物、结局、设定与原稿一致，【须保留要素】悉数保留，没把故事改掉。" },
+  { id: "minimalEdit", label: "改动克制", desc: "只动出问题处，未大段重写、润色、改文风或增删情节；能保留原句就保留。" },
+  { id: "noNewIssues", label: "未引入新硬伤", desc: "修订本身没带来新的矛盾、常识错误、病句或前后不一致。" },
+  { id: "structureKept", label: "标题结构保留", desc: "保留章节标题与整体结构（首行标题、空行、正文）。" },
+];
+
 /** 文笔风味评测点。 */
 export const PROSE_RUBRIC: RubricItem[] = [
   { id: "styleFidelity", label: "风味契合", desc: "贴合目标风味卡(如辰东:短句鼓点/说书人腔/万古尺度/群像镜头；古龙:留白警句；金庸:醇厚)。" },
@@ -109,6 +121,55 @@ export interface ProseFixture {
   };
   /** 即兴演出记录。 */
   transcript: FixtureBeat[];
+}
+
+/**
+ * 审校评测用的 fixture：在一段【草稿正文】里植入已知硬伤（如"沙子"），
+ * 交审校 agent 修，再由裁判核对——硬伤是否被修掉、故事是否被保留。
+ * 复用 ProseFixture 的 scene/transcript/goal 上下文，另加草稿与两组"答案"。
+ */
+export interface ReviewFixture {
+  id: string;
+  label: string;
+  /** 本章目标。 */
+  goal: string;
+  /** 题材(id/label/自定义)，喂 resolveGenre。 */
+  genre?: string;
+  /** 风味卡(可选)。 */
+  style?: string;
+  /** 风味强度(可选)。 */
+  intensity?: string;
+  /** 章号（可选，默认 1）。 */
+  chapterNo?: number;
+  /** 世界设定要点（可选）。 */
+  worldBrief?: string;
+  /**
+   * 故事梗概至今（可选）：喂 ctx.storySoFar，作为审校【跨章保真】的事实/人物锚点来源。
+   * 跨章硬伤（如主角性别、灵根品阶在后一章被悄悄改掉）只有把前情当锚点才审得出来。
+   */
+  storySoFar?: string;
+  /** 上一章结尾片段（可选）：喂 ctx.previousChapterTail，供时间线/承接与跨章设定核对。 */
+  previousChapterTail?: string;
+  /** 场景背景与出场人物（审校的"原始情节依据"之一）。 */
+  scene: {
+    background: string;
+    characters: {
+      name: string;
+      identity: string;
+      personality: string;
+      goal: string;
+      secret?: string;
+      style: string;
+    }[];
+  };
+  /** 即兴演出记录（审校核对"谁说谁做"的依据）。 */
+  transcript: FixtureBeat[];
+  /** 待审校的草稿正文（首行标题、空行、正文），内含已知硬伤。 */
+  draft: string;
+  /** 已知硬伤：审校应当找出并修正（供裁判核对是否修掉）。 */
+  plantedBugs: string[];
+  /** 须保留的故事要素：审校绝不能改动（供裁判核对"不改变故事"）。 */
+  invariants: string[];
 }
 
 /** 把一套 rubric 渲染成喂裁判的评分项清单（编号 + 短名 + 指引）。纯函数。 */

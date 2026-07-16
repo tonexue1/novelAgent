@@ -1,6 +1,6 @@
 # 武侠小说生成 · Wuxia Novel
 
-一个命令行的**多章武侠小说生成器**：给一句前提，先由**规划师 agent** 立意出大纲 + 世界观圣经，然后逐章"多 Agent 演戏 → 执笔人成文 → 档案官更新记忆 → 修订后续大纲"，把一部长篇一章一章写下来。项目落盘在 `novels/<slug>/`，可随时中断、续写、回退。
+一个命令行的**多章武侠小说生成器**：给一句前提，先由**规划师 agent** 立意出大纲 + 世界观圣经，然后逐章"多 Agent 演戏 → 执笔人成文 → 审校反射（挑刺⇄定向修订）→ 档案官更新记忆 → 修订后续大纲"，把一部长篇一章一章写下来。项目落盘在 `novels/<slug>/`，可随时中断、续写、回退。
 
 > 从"渐进式 Agent 学习项目"里抽出来的独立版本，只保留武侠多 Agent 这一条线。已精简为纯 CLI 多章生成，聚焦三件事：**规划、写书、回退**。
 
@@ -36,7 +36,9 @@ flowchart LR
   subgraph loop [每一章]
     ctx["组装章节上下文\n(世界观/相关旧角色/梗概/伏笔/上一章结尾)"] --> play["多 Agent 演一章"]
     play --> write["执笔人成文"]
-    write --> arch["档案官: 更新记忆"]
+    write --> reflect["审校反射循环\n(评审挑刺 ⇄ 执笔人定向修订)"]
+    reflect -->|"仍有硬伤且未满轮数"| reflect
+    reflect --> arch["档案官: 更新记忆"]
     arch --> revise["规划师: 修订后续大纲"]
   end
   revise --> disk["存盘 novels/<slug>/"]
@@ -57,7 +59,10 @@ src/
     scene.ts            # Character/Scene/Beat/DramaContext 类型与渲染（纯数据）
     character.ts        # CharacterActor：由人物设定构建系统提示词，第一人称表演
     director.ts         # Director：openScene 造人（注入章节上下文）/ nextBeat 调度选人；含纯函数解析
-    novelist.ts         # Novelist：单 Agent 执笔，把整章改写成小说体正文（可承接前文）
+    novelist.ts         # Novelist：单 Agent 执笔，write 成文 + revise 按硬伤清单定向修订（补丁纪律/双向自检/不重排不搬锚点）
+    reviewer.ts         # Reviewer：成文后自洽审校，【只挑刺不改稿】——输出 JSON 硬伤清单；含 parseCritique 纯函数
+    reflect.ts          # 审校反射循环：评审挑刺 ⇄ 执笔人定向修订，直到无硬伤或用满轮数；best-effort（超时/异常保留最好一版）+ acceptRevision 防截断护栏（纯函数）
+    rules.ts            # 自洽标准（单一事实源）：角色/执笔/审校共用一条通用标准，取代逐个 bug 加铁律
     events.ts           # 章节生成的结构化事件类型 + 事件回调（CLI 逐条打印）
     agent.ts            # WuxiaDramaAgent：编排一章（playScene 演出 + novelizeScene 成文）
   story/                # 多章小说（整书）：规划 + 记忆 + 编排
@@ -90,13 +95,20 @@ OPENAI_MODEL=deepseek-chat
 
 > 提示：带 thinking 的推理模型会把思维链 `<think>…</think>` 内联进正文，客户端已统一剥离，不会污染台词或破坏 JSON 解析。
 
-**按角色分模型（可选）**：演戏与成书要的能力不同——角色即兴要"活"，成书/谋篇要"稳"。可用 `OPENAI_MODEL_<ROLE>` 分别指定，缺省回落到 `OPENAI_MODEL`。ROLE 取 `CHARACTER`（角色扮演）、`DIRECTOR`（导演造人/调度）、`NOVELIST`（执笔成书）、`PLANNER`（规划大纲）、`ARCHIVIST`（档案官抽记忆）。例如接 MiniMax：
+**按角色分模型（可选）**：演戏与成书要的能力不同——角色即兴要"活"，成书/谋篇要"稳"。可用 `OPENAI_MODEL_<ROLE>` 分别指定，缺省回落到 `OPENAI_MODEL`。ROLE 取 `CHARACTER`（角色扮演）、`DIRECTOR`（导演造人/调度）、`NOVELIST`（执笔成书）、`REVIEWER`（审校修订）、`PLANNER`（规划大纲）、`ARCHIVIST`（档案官抽记忆）。例如接 MiniMax：
 
 ```
 OPENAI_MODEL=MiniMax-M2.5
 OPENAI_MODEL_CHARACTER=MiniMax-M2-her   # 角色扮演模型，演戏更活
 OPENAI_MODEL_NOVELIST=MiniMax-M3        # 成书最看重文笔与长文连贯
+OPENAI_MODEL_REVIEWER=MiniMax-M3        # 审校修订最看重逻辑与自洽
 ```
+
+**成文后审校反射（默认开）**：每章成文后进一道【审校反射循环】——**评审（Reviewer）只挑刺不改稿**，用一条通用自洽标准（见 `drama/rules.ts`）把逻辑/常识/时间线/人设/既有事实硬伤逐条列成 JSON 清单；**执笔人（Novelist.revise）据清单定向修订**，遵补丁纪律只改被点名处、保段落顺序、不搬锚点道具进正文；改完再复审，直到无硬伤（pass）或用满轮数（默认最多 2 轮）。让最会挑错的去挑错、最会写的去落笔，避免"评审兼职改写、结果改多了伤文风"。它是 best-effort：任一轮超时/异常都保留当前最好的一版并收手（绝不拖垮成文），截断/骤缩由防截断护栏另行挡掉（见 `drama/reflect.ts`）。代价是每章多几次 LLM 调用（每轮 1 次挑刺 + 若有硬伤 1 次修订）；不需要可用 `OPENAI_REVIEW=off` 关闭。
+
+> 反射循环由 `bun run eval review` 看护：给一段【植入了已知硬伤】的草稿（`eval/fixtures/review-*.json`），跑与线上同源的整条反射循环（Reviewer 挑刺 + Novelist 定向修订），再交裁判逐条核对最终稿——**该修的硬伤有没有修掉、不该动的故事有没有被改**。内置两支：
+> - `campus-sand`：**单章**时令漏洞（暑假的海沙留到开学），取自真实成稿；
+> - `xianxia-genderroot`：**跨章保真**——草稿单看没毛病，但主角性别（女→被写成男）、灵根品阶（黄品下等→被翻成上品木灵根）都跟前情/设定对不上。fixture 带 `storySoFar` + `previousChapterTail` 作前情锚点，评审只有拿它们当基准才审得出这类"后一章悄悄改了前一章设定"的硬伤。
 
 ## 对外接口（CLI）
 
@@ -150,6 +162,8 @@ bun run verify --live "<一句前提>" [--chapters=N] [--genre=] [--style=] [--i
 # 评测（LLM 评 LLM）
 bun run eval plan "<一句前提>" [--genre=仙侠] [--chapters=10] [--rolling]
 bun run eval prose <fixtureId|path> [--style=chendong] [--intensity=strong]
+bun run eval review <fixtureId|path> [--rounds=2]   # 看护反射审校：给植入硬伤的草稿，跑整条 挑刺⇄定向修订 循环后由裁判核对
+bun run eval fixtures                  # 列出内置文笔 fixtures
 
 # 开发
 bun test                # 纯函数单测
@@ -164,4 +178,4 @@ bun run typecheck       # 类型检查
 
 ## 成本提示
 
-每章 ≈ 一幕的调用量（演出：每拍导演选人 1 次 + 角色行动 1 次，一章约一二十次；成文 1 次较长调用）+ 档案官 1 次 + 规划师修订 1 次；建项目时另有若干次立意/规划调用。得益于"有界上下文"（相关旧角色封顶、梗概滚动重写），**单章成本大致平坦、不随总章数增长**。可调小 `maxBeats`，或用 `bun novel:next` 一章一章来控制耗时与成本。
+每章 ≈ 一幕的调用量（演出：每拍导演选人 1 次 + 角色行动 1 次，一章约一二十次；成文 1 次较长调用）+ 审校反射（每轮 1 次挑刺 + 若有硬伤 1 次定向修订，默认最多 2 轮；无硬伤会提前收，`OPENAI_REVIEW=off` 可整段省掉）+ 档案官 1 次 + 规划师修订 1 次；建项目时另有若干次立意/规划调用。得益于"有界上下文"（相关旧角色封顶、梗概滚动重写），**单章成本大致平坦、不随总章数增长**。可调小 `maxBeats`，或用 `bun novel:next` 一章一章来控制耗时与成本。
